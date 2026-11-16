@@ -1,0 +1,54 @@
+{
+  "name": "dsh-molecular-viewer",
+  "version": "0.2.2",
+  "private": true,
+  "description": "A live 3D molecular structure viewer for DeepSeek Harness, controlled by the agent and the user.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.cjs",
+    "./locale/en.json": "./locale/en.json",
+    "./locale/zh.json": "./locale/zh.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "vendor/structure-viewer",
+    "locale",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "README.zh.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-tool",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
+      ]
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": "0.2.2-rc.3"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node --check src/index.js && node --check src/download.js && node --check src/transcript.js && node --check src/residue.js && node --check src/structure-residues.js && node --check src/measurement.js && node --check src/workbench.js && node --check src/workbench-engine.js && node --check src/workbench-contract.js && node --check scripts/patch-structure-viewer.mjs"
+  },
+  "devDependencies": {
+    "3dmol": "2.5.5",
+    "esbuild": "0.28.2"
+  }
+}

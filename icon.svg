@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Molecular viewer">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101a33"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="bond" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7ea2ff"/>
+      <stop offset="1" stop-color="#a879e8"/>
+    </linearGradient>
+    <radialGradient id="atomA" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#bcd0ff"/>
+      <stop offset="1" stop-color="#4b74e8"/>
+    </radialGradient>
+    <radialGradient id="atomB" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#ffd9a8"/>
+      <stop offset="1" stop-color="#e08a3c"/>
+    </radialGradient>
+    <radialGradient id="atomC" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#c8f5df"/>
+      <stop offset="1" stop-color="#3fa87a"/>
+    </radialGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <g fill="none" stroke="url(#bond)" stroke-width="5" stroke-linecap="round" opacity="0.9">
+    <path d="M42 47 L64 67 L92 39"/>
+    <path d="M64 67 L52 96"/>
+    <path d="M64 67 L96 82"/>
+  </g>
+  <g stroke="#0b1220" stroke-width="3">
+    <circle cx="42" cy="47" r="13" fill="url(#atomA)"/>
+    <circle cx="92" cy="39" r="10" fill="url(#atomC)"/>
+    <circle cx="52" cy="96" r="9" fill="url(#atomB)"/>
+    <circle cx="96" cy="82" r="8" fill="url(#atomC)"/>
+  </g>
+  <circle cx="64" cy="67" r="15" fill="url(#atomA)" stroke="#0b1220" stroke-width="3"/>
+  <circle cx="59" cy="62" r="4" fill="#ffffff" opacity="0.55"/>
+  <circle cx="38" cy="42" r="3" fill="#ffffff" opacity="0.5"/>
+  <circle cx="90" cy="35" r="2.4" fill="#ffffff" opacity="0.5"/>
+</svg>

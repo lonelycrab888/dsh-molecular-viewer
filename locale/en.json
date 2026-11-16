@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Molecular viewer",
+    "description": "Explore and annotate 3D molecular structures in the conversation, with a live viewer the agent can control.",
+    "detail": "README.md"
+  }
+}
