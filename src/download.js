@@ -58,15 +58,6 @@ async function readStructureBytes(stream, length) {
   return Buffer.concat(chunks, size)
 }
 
-export async function readStructureText(stream, length) {
-  return (await readStructureBytes(stream, length)).toString('utf8')
-}
-
-export async function downloadStructure(input, signal, label) {
-  const { bytes, url } = await downloadStructureBytes(input, signal, label)
-  return { text: bytes.toString('utf8'), url }
-}
-
 export async function downloadStructureBytes(input, signal, label) {
   let url = new URL(input)
   const timeout = AbortSignal.timeout(45_000)

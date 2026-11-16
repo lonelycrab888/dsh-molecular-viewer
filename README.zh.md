@@ -14,8 +14,9 @@
 
 - `molecular_workbench` 的 `open` 打开源文件。设置 `placement: "sidebar"` 可直接在右侧栏打开。
 - `context` 读取选区、标注和测量等现场状态。`status` 查看渲染与恢复状态，`viewers` 列出本会话的工作台。
-- `operations` 列出结构操作，`help` 给出指定操作的参数说明，`run` 执行操作。修改场景前可运行 `structure.get_state`，取得可用于修订校验的场景版本。需要关联旧卡片时传入 `viewerId`。
-- 原有 `molecular_viewer` 继续为既有卡片和脚本提供轻量查看器、点选和测距。
+- `operations` 列出结构操作，`help` 给出指定操作的参数说明，`run` 执行操作。修改场景前可运行 `structure.get_state`，取得可用于修订校验的场景版本。需要指定某张工作台卡片时传入 `viewerId`。
+
+同一轮重复打开同一份未改动的结构时，插件会复用工作台和 `viewerId`。
 
 例如，`{"action":"run","operation":"structure.get_state"}` 读取当前场景。也可把 `structure.get_state` 直接填入 `action`，或只传 `operation`。打开结构之前即可调用 `operations` 和 `help`。
 
@@ -32,7 +33,7 @@
 将安装包加入 DSH 0.2.2-rc.3 的 Web 配置，然后重新加载 DSH。
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.2.tgz
+dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.2-workbench-only.tgz
 ```
 
 ## 许可证

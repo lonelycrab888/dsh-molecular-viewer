@@ -18,7 +18,7 @@ const bundles = await Promise.all([
     entryPoints: ['src/client.jsx'],
     outfile: 'lib/client.cjs',
     bundle: true,
-    external: ['react', 'react/jsx-runtime', 'react-dom'],
+    external: ['react', 'react/jsx-runtime'],
     format: 'cjs',
     platform: 'browser',
     target: 'es2022',

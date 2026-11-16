@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { downloadStructureBytes, MAX_STRUCTURE_BYTES } from './download.js'
 import { connectWorkbench } from './workbench-engine.js'
-import { STRUCTURE_EXTENSIONS, WORKBENCH_ROUTE, WORKBENCH_TOOL, workbenchId } from './workbench-contract.js'
+import { PLUGIN_ID, STRUCTURE_EXTENSIONS, WORKBENCH_ROUTE, WORKBENCH_TOOL, workbenchId } from './workbench-contract.js'
 
 const workbenchActions = new Set(['open', 'viewers', 'status', 'context', 'operations', 'help', 'run'])
 const shorthandOperations = new Map([
@@ -252,7 +252,7 @@ const tool = {
   description: [
     'Open and control the live Mol* Molecular Structure Workbench in DSH.',
     'Use open with a workspace file path, RCSB PDB ID, public HTTPS URL, inline PDB/mmCIF, or exampleId "gfp-1ema".',
-    'Open once and reuse the returned viewerId for comparison, scientific analysis and rendering.',
+    'Repeated opens of the same unchanged source in one turn reuse the existing workbench. Reuse its viewerId for comparison, scientific analysis and rendering.',
     'Use context after the user selects or measures something in the viewer. Prefer this tool for new interactive visualizations.',
     'Use action "operations" to list operations or action "help" with an operation name to obtain its input schema. Both work before opening a viewer.',
     'For example, inspect a live viewer with {"action":"run","operation":"structure.get_state"}. The operation name can also be passed as action, or by itself in operation.',
@@ -290,7 +290,7 @@ const tool = {
       text: value.data === undefined ? value.summary : `${value.summary}\n${JSON.stringify(value.data)}`,
     }],
     presentationMeta: (_args, value) => ({
-      plugin: 'dsh-molecular-viewer', ok: value.ok, action: value.action, summary: value.summary, scene: value.scene ?? null,
+      plugin: PLUGIN_ID, ok: value.ok, action: value.action, summary: value.summary, scene: value.scene ?? null,
     }),
   },
 }
@@ -298,6 +298,7 @@ const tool = {
 export function registerWorkbench(ctx, turns) {
   const engines = new Map()
   const previewOpens = new Map()
+  const openRequests = new WeakMap()
   const latest = new Map()
 
   async function resolveRoot(agent, signal) {
@@ -357,10 +358,7 @@ export function registerWorkbench(ctx, turns) {
   }
 
   async function openWorkbench(owner, root, input, signal, previewAddress) {
-    if (Boolean(input.source) === Boolean(input.exampleId)) {
-      throw new Error('Supply one workspace source file or exampleId.')
-    }
-    const path = input.source && await sourcePath(root, input.source)
+    const { path } = input
     const id = randomUUID()
     const directory = join(makeDirectory(owner), id)
     const args = {
@@ -398,19 +396,67 @@ export function registerWorkbench(ctx, turns) {
     if (policy.mode === 'read-only') throw new Error('The DSH session is read-only. This operation writes a workspace artifact.')
   }
 
-  async function openForAgent(agent, root, args, signal) {
-    const imported = typeof args.source === 'string' ? importSource(args.source.trim()) : undefined
-    if (!imported || args.exampleId) return openWorkbench(agent.id, root, args, signal)
-    if (!imported.text && !isAbsolute(args.source) && await stat(resolve(root, args.source)).then(info => info.isFile(), () => false)) {
-      return openWorkbench(agent.id, root, args, signal)
+  async function prepareSource(root, args) {
+    if (Boolean(args.source) === Boolean(args.exampleId)) {
+      throw new Error('Supply one workspace source file or exampleId.')
     }
+    if (args.exampleId) return { key: JSON.stringify(['example', args.exampleId]) }
+
+    const imported = importSource(args.source.trim())
+    const hasLocalAccessionFile = imported?.name && imported.url &&
+      await stat(resolve(root, args.source)).then(info => info.isFile(), () => false)
+    if (imported && !hasLocalAccessionFile) {
+      const address = imported.url ? new URL(imported.url).href : imported.text
+      return { imported, key: createHash('sha256').update(address).digest('hex') }
+    }
+    const path = await sourcePath(root, args.source)
+    const info = await stat(path, { bigint: true })
+    const version = [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':')
+    return { path, key: JSON.stringify(['file', path, version]) }
+  }
+
+  async function createAgentWorkbench(agent, root, args, source, signal) {
+    if (!source.imported) return openWorkbench(agent.id, root, { ...args, path: source.path }, signal)
     requireWorkspaceWrite(agent)
-    const { file, directory } = await importStructure(root, imported, signal)
+    const { file, directory } = await importStructure(root, source.imported, signal)
     try {
-      return await openWorkbench(agent.id, root, { ...args, source: file }, signal)
+      return await openWorkbench(agent.id, root, { ...args, path: await sourcePath(root, file) }, signal)
     } catch (error) {
       await rm(directory, { recursive: true, force: true })
       throw error
+    }
+  }
+
+  async function openForAgent(agent, root, args, turn, signal) {
+    signal?.throwIfAborted()
+    const source = await prepareSource(root, args)
+    signal?.throwIfAborted()
+    let requests = openRequests.get(agent.session)
+    if (!requests || requests.turn !== turn) {
+      requests = { turn, pending: new Map() }
+      openRequests.set(agent.session, requests)
+    }
+    const key = JSON.stringify([root, source.key])
+    const pending = requests.pending
+    while (pending.has(key)) {
+      signal?.throwIfAborted()
+      const previous = pending.get(key)
+      const record = await previous.catch(() => null)
+      signal?.throwIfAborted()
+      if (record) return { record, reused: true }
+      if (pending.get(key) === previous) pending.delete(key)
+    }
+
+    signal?.throwIfAborted()
+    const opening = createAgentWorkbench(agent, root, args, source, signal)
+    pending.set(key, opening)
+    try {
+      return { record: await opening, reused: false }
+    } catch (error) {
+      if (pending.get(key) === opening) pending.delete(key)
+      throw error
+    } finally {
+      if (turn === undefined && pending.get(key) === opening) pending.delete(key)
     }
   }
 
@@ -448,16 +494,18 @@ export function registerWorkbench(ctx, turns) {
     const agent = exec.agent
     if (!agent) throw new Error('Open the molecular workbench from a DSH conversation.')
     const owner = agent.id
+    const turn = turns.get(agent.session)
     const root = await resolveRoot(agent, exec.signal)
     if (args.action === 'operations' || args.action === 'help') return operationHelp(args, root)
     if (args.action === 'open') {
-      const record = await openForAgent(agent, root, args, exec.signal)
+      const { record, reused } = await openForAgent(agent, root, args, turn, exec.signal)
       return {
         ok: true,
         action: args.action,
-        summary: `Opened ${record.title} in the Molecular Structure Workbench.`,
-        data: { viewerId: record.id, title: record.title, placement: record.placement },
-        scene: scene(record, turns.get(agent.session)),
+        summary: reused ? `Reusing the workbench for ${record.title} opened in this turn.`
+          : `Opened ${record.title} in the Molecular Structure Workbench.`,
+        data: { viewerId: record.id, title: record.title, placement: record.placement, reused },
+        ...(reused ? {} : { scene: scene(record, turn) }),
       }
     }
 
@@ -506,7 +554,7 @@ export function registerWorkbench(ctx, turns) {
         const { version } = await ctx.workspaceFiles.stat({ sessionId: agent.id, workspaceRoot: root }, path, signal)
         const previewAddress = `${path}\0${version}`
         const previous = (await listRecords(agent.id, root)).find(item => item.record.previewAddress === previewAddress)
-        const record = previous?.record ?? await openWorkbench(agent.id, root, { source: path, placement: 'sidebar' }, undefined, previewAddress)
+        const record = previous?.record ?? await openWorkbench(agent.id, root, { path, placement: 'sidebar' }, undefined, previewAddress)
         if (previous) await activate(record)
         return { scene: scene(record), version }
       })()

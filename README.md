@@ -22,7 +22,9 @@ Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a
 
 To inspect a live scene, call `molecular_workbench` with `{"action":"run","operation":"structure.get_state"}`. Passing the operation name as `action`, or passing only `operation`, also works. Use `operations` or `help` before opening a viewer to look up available operations.
 
-Compare structures by opening one viewer, then running `structure.add_structure` and `structure.align_structures` in that same viewer. Pass `viewerId` when targeting a particular card. The original `molecular_viewer` tool still supports existing lightweight 3Dmol scenes and scripts.
+Opening the same unchanged source again in a single turn returns the existing workbench ID.
+
+Compare structures by opening one viewer, then running `structure.add_structure` and `structure.align_structures` in that same viewer. Pass `viewerId` when targeting a particular card.
 
 For `structure.molecular_action`, use a single typed action or an array of 1 to
 32 `show` actions in `arguments.action`. A batch adds all requested
@@ -41,9 +43,9 @@ The workbench keeps private recovery checkpoints in the local DSH cache. Reopeni
 Install into the Web profile of DSH 0.2.2-rc.3 and reload the DSH interface.
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.2.tgz
+dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.2-workbench-only.tgz
 ```
 
 ## Development and licensing
 
-Run `npm ci`, `npm run check`, and `npm run build` to build the Host and browser bundles. The Mol* runtime is pinned under [vendor/structure-viewer](vendor/structure-viewer/SOURCE.md), with its accompanying MIT license and third-party notices. The [supplemental notices](vendor/structure-viewer/licenses/README.md) include instructions for obtaining the Mediabunny 1.44.2 source code and the full react-remove-scroll-bar MIT notice. For the lightweight viewer's 3Dmol.js dependency, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Run `npm ci`, `npm run check`, and `npm run build` to build the Host and browser bundles. The Mol* runtime is pinned under [vendor/structure-viewer](vendor/structure-viewer/SOURCE.md), with its accompanying MIT license and third-party notices. The [supplemental notices](vendor/structure-viewer/licenses/README.md) include instructions for obtaining the Mediabunny 1.44.2 source code and the full react-remove-scroll-bar MIT notice.

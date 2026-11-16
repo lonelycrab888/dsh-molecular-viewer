@@ -1,3 +1,4 @@
+export const PLUGIN_ID = 'dsh-molecular-viewer'
 export const WORKBENCH_TOOL = 'molecular_workbench'
 export const WORKBENCH_ROUTE = '/dsh-molecular-viewer/workbench'
 export const WORKBENCH_TAB = 'dsh-molecular-workbench'
