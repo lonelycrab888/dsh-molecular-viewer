@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { sceneDefinition } from './transcript.js'
-import { registerWorkbenchClient, WorkbenchCard, WORKBENCH_STYLE } from './workbench-client.jsx'
+import { registerWorkbenchClient, workbenchNavigation, WorkbenchCard, WORKBENCH_STYLE } from './workbench-client.jsx'
 import { PLUGIN_ID, WORKBENCH_TOOL } from './workbench-contract.js'
 
 const zh = navigator.language.toLowerCase().startsWith('zh')
@@ -16,13 +16,13 @@ const text = zh ? {
   viewerHint: 'The 3D viewer appears below the reply',
 }
 
-function TranscriptViewer({ turn, sessionId, openResource, closeResource }) {
+function TranscriptViewer({ turn, sessionId, openResource, closeResource, openTabs }) {
   const source = turn.data.source(PLUGIN_ID)
   const snapshots = useSyncExternalStore(source.subscribe, source.getSnapshot)
   if (!snapshots || !sessionId) return null
   return <div className="mv-transcript">
     {snapshots.map(snapshot => <WorkbenchCard key={snapshot.id} snapshot={snapshot} sessionId={sessionId}
-      openResource={openResource} closeResource={closeResource} />)}
+      openResource={openResource} closeResource={closeResource} openTabs={openTabs} />)}
   </div>
 }
 
@@ -81,14 +81,7 @@ export function apply(ctx) {
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',
     id: PLUGIN_ID,
-    inject: sessionId => ({
-      sessionId,
-      openResource: address => ctx.sidebarRight.openResourceIn(sessionId, address),
-      closeResource: address => {
-        const tab = ctx.sidebarRight.openTabs.getSnapshot().find(item => item.sessionId === sessionId && item.contentId === address)
-        if (tab) ctx.sidebarRight.closeIn(sessionId, tab.tabId)
-      },
-    }),
+    inject: sessionId => ({ sessionId, ...workbenchNavigation(ctx, sessionId) }),
   }, TranscriptViewer))
   ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
     name: 'tool.call.toolview',

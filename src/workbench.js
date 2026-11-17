@@ -2,16 +2,18 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { downloadStructureBytes, MAX_STRUCTURE_BYTES } from './download.js'
 import { connectWorkbench } from './workbench-engine.js'
+import { prepareStarter, runStarter, starters } from './starter-examples.js'
 import { PLUGIN_ID, STRUCTURE_EXTENSIONS, WORKBENCH_ROUTE, WORKBENCH_TOOL, workbenchId } from './workbench-contract.js'
 
-const workbenchActions = new Set(['open', 'viewers', 'status', 'context', 'operations', 'help', 'run'])
+const workbenchActions = new Set(['open', 'viewers', 'status', 'context', 'operations', 'help', 'run', 'examples'])
 const shorthandOperations = new Map([
   ['status', 'structure.get_viewer_status'],
   ['context', 'structure.get_context'],
 ])
+const openIntentUuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const blockedOpen = new Set(['structure.open', 'structure.open_from_chat', 'structure.open_in_side_pane'])
 const publishingOperations = new Set([
   'structure.export', 'structure.render_image', 'structure.render_movie', 'structure.load_public_density',
@@ -91,6 +93,8 @@ async function importStructure(root, source, signal) {
 function scene(record, turn) {
   return {
     kind: 'workbench', id: record.id, title: record.title, placement: record.placement, openedAt: record.openedAt,
+    deliveredAt: record.deliveredAt ?? record.openedAt,
+    ...(record.starterId ? { starterId: record.starterId } : {}),
     ...(turn === undefined ? {} : { turn }),
   }
 }
@@ -252,21 +256,23 @@ const tool = {
   description: [
     'Open and control the live Mol* Molecular Structure Workbench in DSH.',
     'Use open with a workspace file path, RCSB PDB ID, public HTTPS URL, inline PDB/mmCIF, or exampleId "gfp-1ema".',
-    'Repeated opens of the same unchanged source in one turn reuse the existing workbench. Reuse its viewerId for comparison, scientific analysis and rendering.',
+    'Repeated opens of the same unchanged source in the same conversation reuse its workbench. Use reopen with a fresh openIntentId for a separate viewer. Use status to confirm the renderer is ready before scene operations. Reuse its viewerId for comparison, scientific analysis and rendering.',
     'Use context after the user selects or measures something in the viewer. Prefer this tool for new interactive visualizations.',
     'Use action "operations" to list operations or action "help" with an operation name to obtain its input schema. Both work before opening a viewer.',
-    'For example, inspect a live viewer with {"action":"run","operation":"structure.get_state"}. The operation name can also be passed as action, or by itself in operation.',
+    'Use action examples to list packaged starters. Pass a starter exampleId to open and run it in one workbench. For example, inspect a live viewer with {"action":"run","operation":"structure.get_state"}. The operation name can also be passed as action, or by itself in operation.',
     'For revision-guarded operations, read structure.get_state first. Pass a DSH viewerId only when targeting a specific viewer.',
   ].join(' '),
   parameters: {
     type: 'object',
     additionalProperties: false,
     properties: {
-      action: { type: 'string', description: 'open, viewers, status, context, operations, help, or run. Also accepts a structure.* operation name as a shortcut.' },
+      action: { type: 'string', description: 'open, viewers, status, context, operations, help, run, or examples. Also accepts a structure.* operation name as a shortcut.' },
       source: { type: 'string', description: 'A workspace file, RCSB PDB ID, public HTTPS URL, or inline PDB/mmCIF text.' },
-      exampleId: { type: 'string', description: 'Use gfp-1ema for the bundled demonstration.' },
+      exampleId: { type: 'string', description: 'Use gfp-1ema for the bundled structure. Use action examples for the three guided workflows.' },
       viewerId: { type: 'string', description: 'DSH viewer ID from open or viewers. Defaults to the active viewer.' },
-      placement: { type: 'string', enum: ['inline', 'sidebar'], description: 'For open. Defaults to inline.' },
+      placement: { type: 'string', enum: ['inline', 'sidebar'], description: 'Initial location for a newly opened viewer. Defaults to inline.' },
+      openIntentId: { type: 'string', description: 'Optional UUID for the open request. Reuse it for retries.' },
+      reopen: { type: 'boolean', description: 'Create a separate workbench with a fresh openIntentId.' },
       operation: { type: 'string', description: 'For help, run, or when action is omitted. For example, structure.get_state.' },
       arguments: { type: 'object', additionalProperties: true, description: 'Operation arguments. The workbench supplies sessionId.' },
       params: { type: 'object', additionalProperties: true, description: 'Alias for arguments. Supply only one of these fields.' },
@@ -298,7 +304,9 @@ const tool = {
 export function registerWorkbench(ctx, turns) {
   const engines = new Map()
   const previewOpens = new Map()
-  const openRequests = new WeakMap()
+  const openRequests = new Map()
+  const starterRuns = new Map()
+  const renderers = new Map()
   const latest = new Map()
 
   async function resolveRoot(agent, signal) {
@@ -315,6 +323,13 @@ export function registerWorkbench(ctx, turns) {
     return engine
   }
 
+  async function readPrivateJson(directory, file) {
+    return readFile(join(directory, file), 'utf8').then(JSON.parse, error => {
+      if (error.code !== 'ENOENT') throw error
+      return null
+    })
+  }
+
   async function getRecord(owner, id, root) {
     if (typeof owner !== 'string' || !owner || !workbenchId(id)) throw new Error('Unknown molecular workbench.')
     const directory = join(makeDirectory(owner), id)
@@ -325,6 +340,8 @@ export function registerWorkbench(ctx, turns) {
     if (record.owner !== owner || record.id !== id || (root && record.root !== root)) {
       throw new Error('Unknown molecular workbench.')
     }
+    const location = await readPrivateJson(directory, 'placement.json')
+    if (location) record.placement = location.placement
     return { record, directory }
   }
 
@@ -363,7 +380,7 @@ export function registerWorkbench(ctx, turns) {
     const directory = join(makeDirectory(owner), id)
     const args = {
       ...(path ? { path } : { exampleId: input.exampleId }),
-      openIntentId: randomUUID(),
+      openIntentId: input.openIntentId ?? randomUUID(),
     }
     await mkdir(directory, { recursive: true, mode: 0o700 })
     try {
@@ -376,7 +393,8 @@ export function registerWorkbench(ctx, turns) {
       }
       const record = {
         id, owner, root, openedAt: Date.now(), sessionId, template, presentation, args, previewAddress,
-        title: path ? basename(path) : 'Green fluorescent protein (1EMA)',
+        sourceKey: input.sourceKey, starterId: input.starterId, cardTurn: input.cardTurn,
+        title: starters.get(input.starterId)?.title ?? (path ? basename(path) : 'Green fluorescent protein (1EMA)'),
         placement: input.placement ?? 'inline',
       }
       await writePrivateJson(directory, 'viewer.json', record)
@@ -400,7 +418,9 @@ export function registerWorkbench(ctx, turns) {
     if (Boolean(args.source) === Boolean(args.exampleId)) {
       throw new Error('Supply one workspace source file or exampleId.')
     }
-    if (args.exampleId) return { key: JSON.stringify(['example', args.exampleId]) }
+    if (args.exampleId) {
+      return { key: JSON.stringify(['example', args.exampleId]), starter: starters.get(args.exampleId) }
+    }
 
     const imported = importSource(args.source.trim())
     const hasLocalAccessionFile = imported?.name && imported.url &&
@@ -412,52 +432,145 @@ export function registerWorkbench(ctx, turns) {
     const path = await sourcePath(root, args.source)
     const info = await stat(path, { bigint: true })
     const version = [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':')
-    return { path, key: JSON.stringify(['file', path, version]) }
+    return { path, modifiedAt: Number(info.ctimeMs), key: JSON.stringify(['file', path, version]) }
   }
 
-  async function createAgentWorkbench(agent, root, args, source, signal) {
-    if (!source.imported) return openWorkbench(agent.id, root, { ...args, path: source.path }, signal)
+  async function createAgentWorkbench(agent, root, args, source, turn, signal) {
+    const input = { ...args, path: source.path, sourceKey: source.key, cardTurn: turn }
+    if (!source.imported && !source.starter) return openWorkbench(agent.id, root, input, signal)
     requireWorkspaceWrite(agent)
-    const { file, directory } = await importStructure(root, source.imported, signal)
+    const prepared = source.starter
+      ? await prepareStarter(root, source.starter, signal)
+      : await importStructure(root, source.imported, signal)
     try {
-      return await openWorkbench(agent.id, root, { ...args, path: await sourcePath(root, file) }, signal)
+      return await openWorkbench(agent.id, root, {
+        ...input, path: await sourcePath(root, prepared.path ?? prepared.file), starterId: source.starter?.id,
+      }, signal)
     } catch (error) {
-      await rm(directory, { recursive: true, force: true })
+      await rm(prepared.directory, { recursive: true, force: true })
       throw error
     }
+  }
+
+  function matchesSource(record, source, args) {
+    if (record.sourceKey) return record.sourceKey === source.key
+    if (source.path) return record.args.path === source.path && source.modifiedAt <= record.openedAt
+    return !!args.exampleId && record.args.exampleId === args.exampleId
+  }
+
+  function viewerLifecycle(record, state) {
+    const renderer = renderers.get(record.id)
+    const pending = renderer && (!renderer.attached || state?.rendererIncarnationId === renderer.previousIncarnation)
+    const mounted = !pending && state?.mounted?.status === 'mounted' && state.mounted.hydrated === true
+    const renderState = pending ? 'pending' : state?.rendered?.status ?? 'pending'
+    return {
+      viewerReady: mounted && renderState === 'ready',
+      mountState: mounted ? 'mounted' : 'mount-pending',
+      renderState,
+    }
+  }
+
+  async function readiness(engine, record, signal) {
+    const result = await callForViewer(engine, record, 'structure.get_viewer_status', {}, signal)
+    return viewerLifecycle(record, result.isError ? undefined : result.structuredContent)
   }
 
   async function openForAgent(agent, root, args, turn, signal) {
     signal?.throwIfAborted()
+    const intent = args.openIntentId?.toLowerCase()
+    if (intent !== undefined && !openIntentUuid.test(intent)) throw new Error('openIntentId must be a UUID.')
+    if (args.reopen && !intent) throw new Error('Supply a fresh openIntentId UUID when reopen is true.')
     const source = await prepareSource(root, args)
-    signal?.throwIfAborted()
-    let requests = openRequests.get(agent.session)
-    if (!requests || requests.turn !== turn) {
-      requests = { turn, pending: new Map() }
-      openRequests.set(agent.session, requests)
-    }
-    const key = JSON.stringify([root, source.key])
-    const pending = requests.pending
-    while (pending.has(key)) {
+    const lock = JSON.stringify([agent.id, root])
+    const waiting = openRequests.get(lock)
+    const task = (async () => {
+      await waiting?.catch(() => {})
       signal?.throwIfAborted()
-      const previous = pending.get(key)
-      const record = await previous.catch(() => null)
-      signal?.throwIfAborted()
-      if (record) return { record, reused: true }
-      if (pending.get(key) === previous) pending.delete(key)
-    }
-
-    signal?.throwIfAborted()
-    const opening = createAgentWorkbench(agent, root, args, source, signal)
-    pending.set(key, opening)
+      const records = (await listRecords(agent.id, root)).filter(({ record }) => !record.previewAddress)
+      const replay = intent && records.find(({ record }) =>
+        record.args.openIntentId === intent || record.openIntentAliases?.includes(intent))
+      if (replay && !matchesSource(replay.record, source, args)) {
+        throw new Error('This openIntentId belongs to another source or file revision. Use a new UUID.')
+      }
+      const existing = replay || (!args.reopen && records.find(({ record }) => matchesSource(record, source, args)))
+      if (existing) {
+        const { record, directory } = existing
+        const engine = await engineFor(directory, root)
+        const live = await readiness(engine, record, signal)
+        const present = !live.viewerReady && record.cardTurn !== turn
+        if (intent && record.args.openIntentId !== intent && !record.openIntentAliases?.includes(intent)) {
+          record.openIntentAliases = [...(record.openIntentAliases ?? []), intent]
+        }
+        if (present) {
+          record.cardTurn = turn
+          record.deliveredAt = Math.max(Date.now(), (record.deliveredAt ?? record.openedAt) + 1)
+        }
+        record.sourceKey = source.key
+        await writePrivateJson(directory, 'viewer.json', record)
+        await activate(record)
+        return { record, reused: true, present, live }
+      }
+      const record = await createAgentWorkbench(agent, root, { ...args, openIntentId: intent }, source, turn, signal)
+      return { record, reused: false, present: true, live: {
+        viewerReady: false, mountState: 'presentation-issued', renderState: 'pending',
+      } }
+    })()
+    openRequests.set(lock, task)
     try {
-      return { record: await opening, reused: false }
-    } catch (error) {
-      if (pending.get(key) === opening) pending.delete(key)
-      throw error
+      return await task
     } finally {
-      if (turn === undefined && pending.get(key) === opening) pending.delete(key)
+      if (openRequests.get(lock) === task) openRequests.delete(lock)
     }
+  }
+
+  async function starterStatus(directory) {
+    return starterRuns.get(directory)?.state ?? await readPrivateJson(directory, 'starter-result.json') ?? { phase: 'pending' }
+  }
+
+  async function maybeStartExample(engine, record, directory, live) {
+    const existing = await starterStatus(directory)
+    if (!live.viewerReady || existing.phase !== 'pending' || starterRuns.has(directory)) return existing
+    const starter = starters.get(record.starterId)
+    if (!starter) throw new Error('The starter definition is unavailable.')
+    const controller = new AbortController()
+    const task = { controller, state: { phase: 'running', step: 1, total: starter.orderedToolSequence.length } }
+    starterRuns.set(directory, task)
+    void runStarter(starter, {
+      workspace: dirname(record.args.path), sessionId: record.sessionId, engine, signal: controller.signal,
+      progress: step => { task.state = { ...task.state, step: step.order, operation: step.tool } },
+    }).then(
+      results => { task.state = { phase: 'complete', results } },
+      error => { task.state = { phase: 'error', error: errorText(error), step: task.state.step } },
+    ).then(() => writePrivateJson(directory, 'starter-result.json', task.state))
+      .then(() => starterRuns.delete(directory))
+      .catch(error => { task.state = { phase: 'error', error: errorText(error) } })
+    return task.state
+  }
+
+  async function askAboutSelection(engine, record, question, signal) {
+    if (typeof question !== 'string' || !question.trim() || question.length > 1000) {
+      throw new Error('Enter a question of up to 1,000 characters.')
+    }
+    const agent = ctx.agents.get(record.owner)
+    if (!agent || await resolveRoot(agent, signal) !== record.root) {
+      throw new Error('Open the owning DSH conversation before asking about a selection.')
+    }
+    const result = await callForViewer(engine, record, 'structure.get_context', {
+      sections: ['selection'], maxItems: 16, maxBytes: 8192,
+    }, signal)
+    const selected = result.structuredContent?.sections?.selection?.selected
+    if (result.isError || !selected?.atomCount) throw new Error('Select a residue, chain, or atom in this workbench first.')
+    const snapshot = {
+      viewerId: record.id, structure: record.title,
+      revision: result.structuredContent.revision,
+      summary: selected.summary, expression: selected.expression, atomCount: selected.atomCount,
+    }
+    await activate(record)
+    signal?.throwIfAborted()
+    agent.followup({
+      id: randomUUID(), role: 'user', source: { kind: 'user' },
+      content: [{ type: 'text', text: `${question.trim()}\n\nDSH molecular workbench selection at the time of this question:\n${JSON.stringify(snapshot)}` }],
+    })
   }
 
   async function operationHelp(args, root) {
@@ -497,15 +610,27 @@ export function registerWorkbench(ctx, turns) {
     const turn = turns.get(agent.session)
     const root = await resolveRoot(agent, exec.signal)
     if (args.action === 'operations' || args.action === 'help') return operationHelp(args, root)
+    if (args.action === 'examples') return {
+      ok: true, action: args.action, summary: 'Molecular workbench starter examples.',
+      data: { examples: [...starters.values()].map(({ id, title, prompt }) => ({ id, title, prompt })) },
+    }
     if (args.action === 'open') {
-      const { record, reused } = await openForAgent(agent, root, args, turn, exec.signal)
+      const { record, reused, present, live } = await openForAgent(agent, root, args, turn, exec.signal)
       return {
         ok: true,
         action: args.action,
-        summary: reused ? `Reusing the workbench for ${record.title} opened in this turn.`
-          : `Opened ${record.title} in the Molecular Structure Workbench.`,
-        data: { viewerId: record.id, title: record.title, placement: record.placement, reused },
-        ...(reused ? {} : { scene: scene(record, turn) }),
+        summary: `${reused ? 'Reusing' : 'Opening'} ${record.title} in the Molecular Structure Workbench. ${live.viewerReady
+          ? 'The viewer is ready.' : 'Wait for the renderer and check status before controlling the scene.'}`,
+        data: {
+          viewerId: record.id, title: record.title, placement: record.placement, reused,
+          sessionReady: true, viewerReady: live.viewerReady,
+          viewerOpen: {
+            disposition: reused ? 'reused' : 'created', intentId: args.openIntentId ?? record.args.openIntentId,
+            mountState: live.mountState, renderState: live.renderState,
+          },
+          ...(record.starterId ? { starterId: record.starterId } : {}),
+        },
+        ...(present ? { scene: scene(record, turn) } : {}),
       }
     }
 
@@ -533,7 +658,15 @@ export function registerWorkbench(ctx, turns) {
     if (publishingOperations.has(operation) || (operation === 'structure.project' && input.action === 'save')) {
       requireWorkspaceWrite(agent)
     }
-    return publicResult(args.action, await runForViewer(engine, current.record, current.directory, operation, input, exec.signal))
+    const result = await runForViewer(engine, current.record, current.directory, operation, input, exec.signal)
+    const reply = publicResult(args.action, result)
+    if (reply.ok && operation === 'structure.get_viewer_status') {
+      reply.data = { ...reply.data, ...viewerLifecycle(current.record, reply.data) }
+    }
+    if (reply.ok && current.record.starterId && (operation === 'structure.get_viewer_status' || operation === 'structure.get_context')) {
+      reply.data = { ...reply.data, starter: await starterStatus(current.directory) }
+    }
+    return reply
   }
 
   async function openPreview(input, signal) {
@@ -600,12 +733,14 @@ export function registerWorkbench(ctx, turns) {
           if (parts.length !== 3) return json({ error: 'Unknown molecular workbench route.' }, 404)
           const [session, id, action] = parts
           const { record, directory } = await getRecord(decodeURIComponent(session), id)
-          const engine = await engineFor(directory, record.root)
+          if (action === 'location' && request.method === 'GET') return json({ placement: record.placement })
           if (action === 'setup' && request.method === 'GET') {
             const { path, ...publicArgs } = record.args
-            return json({ args: publicArgs, result: record.presentation, lastDistance: (await readLastDistance(directory))?.measurement })
+            return json({ args: publicArgs, result: record.presentation, lastDistance: (await readLastDistance(directory))?.measurement,
+              examples: [...starters.values()].map(({ id, title }) => ({ id, title })) })
           }
           if (action === 'frame' && request.method === 'GET') {
+            const engine = await engineFor(directory, record.root)
             const resources = await engine.request('resources/read', { uri: record.template }, request.signal)
             return new Response(resources.contents[0].text, {
               headers: {
@@ -633,14 +768,58 @@ export function registerWorkbench(ctx, turns) {
           const rejection = ctx.connection.requestRejection(request)
           if (rejection !== undefined) return json({ error: 'Open the workbench in an authenticated DSH session.' }, rejection)
           if (request.method !== 'POST') return json({ error: 'Use POST.' }, 405)
-          const { action, sessionId, viewerId, address, method, params, picks } = await parseBody(request)
+          const { action, sessionId, viewerId, address, method, params, picks, question, placement, exampleId, token } = await parseBody(request)
           if (action === 'preview') return json(await openPreview({ sessionId, address }, abort.signal))
           const { record, directory } = await getRecord(sessionId, viewerId)
           if (action === 'activate') {
             if (activeRecord(sessionId)?.id !== viewerId) await activate(record)
             return json({ ok: true })
           }
+          if (action === 'placement') {
+            if (placement !== 'inline' && placement !== 'sidebar') throw new Error('Unknown workbench placement.')
+            await writePrivateJson(directory, 'placement.json', { placement })
+            return json({ ok: true })
+          }
+          if (action === 'detach-renderer') {
+            const renderer = renderers.get(record.id)
+            if (renderer?.token === token) renderer.attached = false
+            return json({ ok: true })
+          }
           const engine = await engineFor(directory, record.root)
+          if (action === 'attach-renderer') {
+            if (typeof token !== 'string' || !openIntentUuid.test(token)) throw new Error('Invalid renderer ID.')
+            const renderer = { token, attached: true, previousIncarnation: null }
+            renderers.set(record.id, renderer)
+            const result = await callForViewer(engine, record, 'structure.get_viewer_status', {}, abort.signal)
+            renderer.previousIncarnation = result.structuredContent?.rendererIncarnationId ?? null
+            return json({ ok: true })
+          }
+          if (action === 'status') {
+            const result = await callForViewer(engine, record, 'structure.get_viewer_status', {}, abort.signal)
+            if (result.isError) throw new Error(publicResult('status', result).summary)
+            const state = result.structuredContent
+            const live = viewerLifecycle(record, state)
+            const starter = record.starterId ? await maybeStartExample(engine, record, directory, live) : undefined
+            const publicStarter = starter?.phase === 'complete' ? {
+              phase: 'complete', results: starter.results.map(({ tool, summary }) => ({ tool, summary })),
+            } : starter
+            return json({ state, ...live, starter: publicStarter })
+          }
+          if (action === 'launch-example') {
+            const starter = starters.get(exampleId)
+            const agent = ctx.agents.get(record.owner)
+            if (!starter || !agent || await resolveRoot(agent, abort.signal) !== record.root) {
+              throw new Error('Open the owning DSH conversation before starting a packaged example.')
+            }
+            abort.signal.throwIfAborted()
+            agent.followup({ id: randomUUID(), role: 'user', source: { kind: 'user' },
+              content: [{ type: 'text', text: `${starter.prompt}\n\nRun the packaged DSH starter with molecular_workbench action "open" and exampleId "${starter.id}". The workbench runs the example after mounting.` }] })
+            return json({ ok: true })
+          }
+          if (action === 'ask-selection') {
+            await askAboutSelection(engine, record, question, abort.signal)
+            return json({ ok: true })
+          }
           if (action === 'selected-residue') return json({ residue: await selectedResidue(engine, record, abort.signal) })
           if (action === 'residue-distance') {
             if (!Array.isArray(picks) || picks.length !== 2 || !picks[0]?.objectId || picks[0].objectId !== picks[1]?.objectId) {
@@ -676,6 +855,7 @@ export function registerWorkbench(ctx, turns) {
     return () => {
       disposeApi()
       disposeResources()
+      for (const task of starterRuns.values()) task.controller.abort()
       for (const engine of engines.values()) void engine.then(item => item.close()).catch(() => {})
       engines.clear()
     }

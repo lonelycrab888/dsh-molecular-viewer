@@ -4,9 +4,11 @@ Open, inspect, compare, and analyze molecular structures from a DeepSeek Harness
 
 ## Inline 3D viewer
 
-Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a recognized structure in the workspace file browser. The workbench also accepts RCSB PDB IDs, public HTTPS structure files, inline PDB/mmCIF text, and a bundled GFP example.
+Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a recognized structure in the workspace file browser. The workbench also accepts RCSB PDB IDs, public HTTPS structure files, inline PDB/mmCIF text, and three bundled starter workflows.
 
 - Pick atoms, residues, chains, or sequences, create named selections, and inspect their exact identities. Turn on **Closest heavy-atom distance** and click two residues in the same loaded structure to measure their nearest non-hydrogen atoms. The agent can read the result when asked about the user's last measurement. The Measurements inspector provides atom-based distance, angle, and dihedral measurements and geometry guides.
+- Select **Ask about selection** in the workbench toolbar to send a question to the owning conversation. The message includes the structure, viewer ID, revision, and selection at submission.
+- Use **Open viewer** to move the workbench into the DSH right sidebar and **Return to chat** to restore it inline. The workbench keeps its ID and restores the saved scene after the renderer mounts. The toolbar shows when rendering is ready.
 - Load and align named objects, operate on assemblies and models, derive structures, and query atoms and residues. Inspect contacts, clashes, hydrogen bonds, RMSD, SASA, buried area, density, trajectories, validation and quality annotations, assembly symmetry, and public motif matches.
 - Edit representations, lighting, clipping, camera, ribbons, annotations, and animation. Use scene snapshots, undo and redo, and source-checked project save and restore. Export images, MP4, scenes, selected coordinates, split-model archives, visible geometry, and analysis CSV with provenance.
 
@@ -14,7 +16,8 @@ Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a
 
 | `molecular_workbench` action | Behavior |
 | --- | --- |
-| `open` | Open a workspace file or imported source, or use `exampleId: "gfp-1ema"`. Set `placement: "sidebar"` to open in the DSH sidebar. |
+| `open` | Open a workspace file, imported source, or bundled `exampleId`. Set `placement: "sidebar"` for a new sidebar workbench. |
+| `examples` | List the three packaged starter workflows, IDs, and prompts. |
 | `context` | Read the active selection, annotations, measurements, and analysis summaries. |
 | `status` / `viewers` | Read renderer and recovery status or list the current conversation's workbenches. |
 | `operations` / `help` | Find an operation and read its exact input schema. |
@@ -22,7 +25,9 @@ Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a
 
 To inspect a live scene, call `molecular_workbench` with `{"action":"run","operation":"structure.get_state"}`. Passing the operation name as `action`, or passing only `operation`, also works. Use `operations` or `help` before opening a viewer to look up available operations.
 
-Opening the same unchanged source again in a single turn returns the existing workbench ID.
+Opening the same unchanged source in the same DSH conversation and workspace reuses the existing viewer ID across turns. Pass a stable `openIntentId` UUID when retrying a request. Use `reopen: true` with a fresh `openIntentId` to create a separate workbench deliberately. Repeat that UUID to retry the same creation.
+
+An `open` result reports whether the session exists and whether its renderer is ready separately. Check `viewerReady`, `mountState` and `renderState` with `status` before applying scene commands.
 
 Compare structures by opening one viewer, then running `structure.add_structure` and `structure.align_structures` in that same viewer. Pass `viewerId` when targeting a particular card.
 
@@ -31,6 +36,18 @@ For `structure.molecular_action`, use a single typed action or an array of 1 to
 representations as one undoable change. If any target is invalid, the whole
 batch fails. Omit `arguments.expectedRevision` to use the live scene revision,
 or pass a revision to reject changes made since your read.
+
+## Starter examples
+
+In a writable DSH conversation, select **Starter examples** in the workbench toolbar or ask the agent to open a starter by its ID. The example uses pinned PDB files from the package and runs after the workbench renders.
+
+| Example ID | Result |
+| --- | --- |
+| `mdm2-p53-interface` | 1YCR chain interface, contact count, buried surface area, and styled interface. |
+| `adenylate-kinase-open-closed` | 4AKE and 1AKE alignment with matched residue count, RMSD, TM-scores, and the superposed structures. |
+| `gfp-publication-image` | Annotated 1EMA GFP chromophore, 1600 × 1200 PNG and a render provenance sidecar. |
+
+Inputs and any exported files are in the workspace under `structure-viewer-examples/`. The `gfp-1ema` ID opens the basic GFP structure.
 
 ## Data and recovery
 
@@ -43,7 +60,7 @@ The workbench keeps private recovery checkpoints in the local DSH cache. Reopeni
 Install into the Web profile of DSH 0.2.2-rc.3 and reload the DSH interface.
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.2-workbench-only.tgz
+dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.3.tgz
 ```
 
 ## Development and licensing

@@ -4,23 +4,40 @@
 
 ## 使用
 
-请智能体「用分子工作台打开这个 PDB 文件，按链着色」，或打开工作区文件的分子结构预览。可以从对话卡片切换至右侧栏或展开全屏。工作台也能打开 RCSB PDB ID、公开 HTTPS 下载、内联 PDB/mmCIF 和内置 GFP 示例。
+请智能体「用分子工作台打开这个 PDB 文件，按链着色」，或打开工作区文件的分子结构预览。工作台也能打开 RCSB PDB ID、公开 HTTPS 下载、内联 PDB/mmCIF 和三个内置入门示例。
 
 - **点选和测距。** 点击原子或序列中的残基可高亮和查看身份。打开 **最近重原子测距**，依次点选同一个结构对象上的两个残基。工作台显示最近的重原子对和距离（Å），可以紧接着问智能体「刚才测的是哪两个残基，最近的重原子对和距离是多少？」常规测量区还可使用原子端点建立距离、键角、二面角和几何参考。
+- **就选区提问。** 点选后，点击工作台工具栏的 **就选区提问**，编辑并发送问题。消息会带上发送时的选区、结构名、工作台 ID 和场景修订号。
+- **迁移和渲染。** 点击工作台内的 **Open viewer** 或卡片的 **在侧栏打开** 即可迁移到 DSH 右侧栏。点击 **Return to chat** 可返回对话。两处使用同一个工作台 ID，并恢复已保存的场景。工具栏会显示渲染是否就绪。
 - **结构和分析。** 支持命名选择、结构叠合、多模型与生物组装体、衍生对象、接触、碰撞、氢键、SASA、埋藏面积、密度图、拓扑及轨迹、质量评估、装配对称性和公开结构基序搜索。某些分析需要相应的输入文件或公共数据库。
 - **样式和保存。** 调整表示、配色、图层、光照、相机和标注。保存命名场景，撤销与重做，或保存带依赖校验的结构项目。支持静态图片、MP4、选择坐标、拆分模型、场景、渲染几何和分析 CSV 导出。显式写入的导出物保存在当前工作区，并带有来源和复现元数据。
 
 ## 智能体工具
 
-- `molecular_workbench` 的 `open` 打开源文件。设置 `placement: "sidebar"` 可直接在右侧栏打开。
+- `molecular_workbench` 的 `open` 打开源或示例。新工作台可用 `placement: "sidebar"` 直接在右侧栏打开。
+- `examples` 列出三个内置示例、ID 和提示词。
 - `context` 读取选区、标注和测量等现场状态。`status` 查看渲染与恢复状态，`viewers` 列出本会话的工作台。
 - `operations` 列出结构操作，`help` 给出指定操作的参数说明，`run` 执行操作。修改场景前可运行 `structure.get_state`，取得可用于修订校验的场景版本。需要指定某张工作台卡片时传入 `viewerId`。
 
-同一轮重复打开同一份未改动的结构时，插件会复用工作台和 `viewerId`。
+同一 DSH 对话和工作区内，跨轮打开同一份未改动的结构会复用工作台 ID。发送重试请求时沿用同一个 `openIntentId` UUID。要显式新建独立工作台，传入 `reopen: true` 和新的 `openIntentId`。重试这次新建时仍使用该 UUID。
+
+`open` 分开报告会话已创建和画布渲染就绪。执行场景操作前，可用 `status` 查看 `viewerReady`、`mountState` 和 `renderState`。
 
 例如，`{"action":"run","operation":"structure.get_state"}` 读取当前场景。也可把 `structure.get_state` 直接填入 `action`，或只传 `operation`。打开结构之前即可调用 `operations` 和 `help`。
 
 `structure.molecular_action` 接受一个动作，也可以在 `arguments.action` 中传入 1 到 32 个 `show` 动作。批量显示作为一次可撤销的场景变更提交，任一目标无效时整组不应用。省略 `arguments.expectedRevision` 会读取当前场景修订号。也可显式传入修订号，防止覆盖读取后发生的变更。
+
+## 三个入门示例
+
+在可写工作区的对话中，从工具栏打开 **入门示例**，或请智能体按示例 ID 打开。工作台使用包内固定版本的 PDB 数据，渲染就绪后自动运行。
+
+| 示例 ID | 结果 |
+| --- | --- |
+| `mdm2-p53-interface` | 1YCR 的 MDM2–p53 界面接触、埋藏面积和界面样式。 |
+| `adenylate-kinase-open-closed` | 对齐 4AKE 和 1AKE，显示匹配残基数、RMSD、TM-score 和叠合结构。 |
+| `gfp-publication-image` | 标注 1EMA 的 GFP 发色团，生成 1600 × 1200 PNG 和渲染来源记录。 |
+
+示例输入和导出文件保存在工作区的 `structure-viewer-examples/` 目录。仍可用 `gfp-1ema` 单独查看基础 GFP 结构。
 
 ## 文件与恢复
 
@@ -33,7 +50,7 @@
 将安装包加入 DSH 0.2.2-rc.3 的 Web 配置，然后重新加载 DSH。
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.2-workbench-only.tgz
+dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.3.tgz
 ```
 
 ## 许可证
