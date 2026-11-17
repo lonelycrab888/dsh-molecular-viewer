@@ -6,14 +6,17 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { downloadStructureBytes, MAX_STRUCTURE_BYTES } from './download.js'
 import { connectWorkbench } from './workbench-engine.js'
+import { guideTopics, workbenchGuidance, workbenchGuide } from './workbench-guidance.js'
 import { prepareStarter, runStarter, starters } from './starter-examples.js'
 import { PLUGIN_ID, STRUCTURE_EXTENSIONS, WORKBENCH_ROUTE, WORKBENCH_TOOL, workbenchId } from './workbench-contract.js'
 
-const workbenchActions = new Set(['open', 'viewers', 'status', 'wait', 'context', 'operations', 'help', 'run', 'examples'])
+const workbenchActions = new Set(['open', 'viewers', 'status', 'wait', 'context', 'operations', 'help', 'run', 'examples', 'guide'])
 const shorthandOperations = new Map([
   ['status', 'structure.get_viewer_status'],
   ['context', 'structure.get_context'],
 ])
+const SELECTION_DRAFT_TTL_MS = 15 * 60 * 1000
+const MAX_SELECTION_DRAFTS = 64
 const MAX_READY_WAIT_MS = 15_000
 const openIntentUuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const rendererIndependent = new Set(['structure.get_render_job_control', 'structure.cancel_render'])
@@ -267,7 +270,7 @@ const tool = {
     'Use open with a workspace file path, RCSB PDB ID, public HTTPS URL, inline PDB/mmCIF, or exampleId "gfp-1ema".',
     'Repeated opens of the same unchanged source in the same conversation reuse its workbench. Use reopen with a fresh openIntentId for a separate viewer. After open, if viewerReady is false, call wait once for that viewerId before scene operations. If it is still pending, ask the user to show the existing card in DSH and resume after rendering is ready. Compare structures by adding them to that same viewer.',
     'Use context after the user selects or measures something in the viewer. Prefer this tool for new interactive visualizations.',
-    'Use action "operations" to list operations or action "help" with an operation name to obtain its input schema. Both work before opening a viewer.',
+    'Use action "operations" to list operations or action "help" with an operation name to obtain its input schema. Use action guide for operation choice, selection, residue SASA, pagination and revision workflows. These actions work before opening a viewer.',
     'Use action examples to list packaged starters. Pass a starter exampleId to open and run it in one workbench. For example, inspect a live viewer with {"action":"run","operation":"structure.get_state"}. The operation name can also be passed as action, or by itself in operation.',
     'For revision-guarded operations, read structure.get_state after viewerReady is true. Use only successful live results when reporting plugin measurements or exports.',
   ].join(' '),
@@ -275,7 +278,8 @@ const tool = {
     type: 'object',
     additionalProperties: false,
     properties: {
-      action: { type: 'string', description: 'open, viewers, status, wait, context, operations, help, run, or examples. Also accepts a structure.* operation name as a shortcut.' },
+      action: { type: 'string', description: 'open, viewers, status, wait, context, operations, help, run, examples, or guide. Also accepts a structure.* operation name as a shortcut.' },
+      topic: { type: 'string', enum: guideTopics, description: 'Workflow topic for action guide. Omit for the index.' },
       source: { type: 'string', description: 'A workspace file, RCSB PDB ID, public HTTPS URL, or inline PDB/mmCIF text.' },
       exampleId: { type: 'string', description: 'Use gfp-1ema for the bundled structure. Use action examples for the three guided workflows.' },
       viewerId: { type: 'string', description: 'DSH viewer ID from open or viewers. Defaults to the active viewer.' },
@@ -318,6 +322,7 @@ export function registerWorkbench(ctx, turns) {
   const openRequests = new Map()
   const starterRuns = new Map()
   const renderers = new Map()
+  const selectionDrafts = new Map()
   const latest = new Map()
 
   async function resolveRoot(agent, signal) {
@@ -613,7 +618,38 @@ export function registerWorkbench(ctx, turns) {
     return task.state
   }
 
-  async function askAboutSelection(engine, record, question, signal) {
+  async function captureSelection(engine, record, signal) {
+    const status = await readViewerStatus(engine, record, signal)
+    if (!status.viewerReady) throw new Error(pendingViewer('context', record, status).summary)
+    const result = await callForViewer(engine, record, 'structure.get_context', {
+      sections: ['selection'], maxItems: 64, maxBytes: 32768,
+    }, signal)
+    const context = result.structuredContent
+    if (result.isError || !context) throw new Error(publicResult('context', result).summary)
+    const selected = context.sections?.selection?.selected
+    if (!selected?.atomCount) throw new Error('Select a residue, chain, or atom in this workbench first.')
+    const exact = Array.isArray(selected.atomIds) && selected.atomIds.length === selected.atomCount && !selected.atomIdsTruncated
+    const source = record.args.path ? relative(record.root, record.args.path) : record.args.exampleId
+    const snapshot = {
+      viewerId: record.id,
+      surface: record.previewAddress ? 'file-preview' : 'workbench',
+      structure: record.title, source,
+      revision: context.revision, geometryRevision: context.geometryRevision,
+      summary: selected.summary, atomCount: selected.atomCount,
+      expression: exact ? { kind: 'atom_ids', atomIds: selected.atomIds } : selected.expression,
+      exactAtomIds: exact,
+    }
+    const now = Date.now()
+    for (const [key, draft] of selectionDrafts) {
+      if (draft.expires <= now) selectionDrafts.delete(key)
+    }
+    if (selectionDrafts.size >= MAX_SELECTION_DRAFTS) selectionDrafts.delete(selectionDrafts.keys().next().value)
+    const selectionId = randomUUID()
+    selectionDrafts.set(selectionId, { owner: record.owner, snapshot, expires: now + SELECTION_DRAFT_TTL_MS })
+    return { selectionId, structure: record.title, source, summary: selected.summary }
+  }
+
+  async function askAboutSelection(record, selectionId, question, signal) {
     if (typeof question !== 'string' || !question.trim() || question.length > 1000) {
       throw new Error('Enter a question of up to 1,000 characters.')
     }
@@ -621,21 +657,15 @@ export function registerWorkbench(ctx, turns) {
     if (!agent || await resolveRoot(agent, signal) !== record.root) {
       throw new Error('Open the owning DSH conversation before asking about a selection.')
     }
-    const result = await callForViewer(engine, record, 'structure.get_context', {
-      sections: ['selection'], maxItems: 16, maxBytes: 8192,
-    }, signal)
-    const selected = result.structuredContent?.sections?.selection?.selected
-    if (result.isError || !selected?.atomCount) throw new Error('Select a residue, chain, or atom in this workbench first.')
-    const snapshot = {
-      viewerId: record.id, structure: record.title,
-      revision: result.structuredContent.revision,
-      summary: selected.summary, expression: selected.expression, atomCount: selected.atomCount,
+    const draft = selectionDrafts.get(selectionId)
+    if (!draft || draft.owner !== record.owner || draft.snapshot.viewerId !== record.id || draft.expires <= Date.now()) {
+      throw new Error('This selection draft is unavailable. Capture the selection again.')
     }
-    await activate(record)
     signal?.throwIfAborted()
+    selectionDrafts.delete(selectionId)
     agent.followup({
       id: randomUUID(), role: 'user', source: { kind: 'user' },
-      content: [{ type: 'text', text: `${question.trim()}\n\nDSH molecular workbench selection at the time of this question:\n${JSON.stringify(snapshot)}` }],
+      content: [{ type: 'text', text: `${question.trim()}\n\nDSH molecular workbench selection at the time of this question:\n${JSON.stringify(draft.snapshot)}` }],
     })
   }
 
@@ -675,6 +705,9 @@ export function registerWorkbench(ctx, turns) {
     const owner = agent.id
     const turn = turns.get(agent.session)
     const root = await resolveRoot(agent, exec.signal)
+    if (args.action === 'guide') return {
+      ok: true, action: args.action, summary: 'Molecular workbench workflow guide.', data: workbenchGuide(args.topic),
+    }
     if (args.action === 'operations' || args.action === 'help') return operationHelp(args, root)
     if (args.action === 'examples') return {
       ok: true, action: args.action, summary: 'Molecular workbench starter examples.',
@@ -804,8 +837,9 @@ export function registerWorkbench(ctx, turns) {
     text: context => {
       if (!context.agent) return ''
       const current = activeRecord(context.agent.id)
-      const instructions = 'For molecular_workbench, call action "wait" with the returned viewerId after an open reports viewerReady=false. Use scene operations only when viewerReady=true. If wait returns pending, let the user show the existing DSH card and resume when ready. Keep the same viewerId when adding or comparing structures.'
-      return current ? `${instructions} The active workbench is ${JSON.stringify(current.title)} (viewerId ${current.id}). Use action=context for questions about the current selection or measurements.` : instructions
+      return current
+        ? `${workbenchGuidance}\nThe default active workbench is ${JSON.stringify(current.title)} (viewerId ${current.id}). An explicit viewer in the user request takes precedence.`
+        : workbenchGuidance
     },
   }))
 
@@ -897,7 +931,7 @@ export function registerWorkbench(ctx, turns) {
           const rejection = ctx.connection.requestRejection(request)
           if (rejection !== undefined) return json({ error: 'Open the workbench in an authenticated DSH session.' }, rejection)
           if (request.method !== 'POST') return json({ error: 'Use POST.' }, 405)
-          const { action, sessionId, viewerId, address, method, params, picks, question, placement, exampleId, token } = await parseBody(request)
+          const { action, sessionId, viewerId, address, method, params, picks, question, selectionId, placement, exampleId, token } = await parseBody(request)
           if (action === 'preview') return json(await openPreview({ sessionId, address }, abort.signal))
           const { record, directory } = await getRecord(sessionId, viewerId)
           if (action === 'activate') {
@@ -943,8 +977,9 @@ export function registerWorkbench(ctx, turns) {
               content: [{ type: 'text', text: `${starter.prompt}\n\nRun the packaged DSH starter with molecular_workbench action "open" and exampleId "${starter.id}". The workbench runs the example after mounting.` }] })
             return json({ ok: true })
           }
+          if (action === 'capture-selection') return json(await captureSelection(engine, record, abort.signal))
           if (action === 'ask-selection') {
-            await askAboutSelection(engine, record, question, abort.signal)
+            await askAboutSelection(record, selectionId, question, abort.signal)
             return json({ ok: true })
           }
           if (action === 'selected-residue') return json({ residue: await selectedResidue(engine, record, abort.signal) })

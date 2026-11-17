@@ -7,7 +7,7 @@ Open, inspect, compare, and analyze molecular structures from a DeepSeek Harness
 Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a recognized structure in the workspace file browser. The workbench also accepts RCSB PDB IDs, public HTTPS structure files, inline PDB/mmCIF text, and three bundled starter workflows.
 
 - Pick atoms, residues, chains, or sequences, create named selections, and inspect their exact identities. Turn on **Closest heavy-atom distance** and click two residues in the same loaded structure to measure their nearest non-hydrogen atoms. The agent can read the result when asked about the user's last measurement. The Measurements inspector provides atom-based distance, angle, and dihedral measurements and geometry guides.
-- Select **Ask about selection** in the workbench toolbar to send a question to the owning conversation. The message includes the structure, viewer ID, revision, and selection at submission.
+- Use **Ask about this preview selection** in a file preview or **Ask about selection** on a chat workbench. The form shows the captured file and selection. The question carries the originating viewer ID, scene and geometry revisions, and the selection captured when the form opened.
 - Use **Open viewer** to move the workbench into the DSH right sidebar and **Return to chat** to restore it inline. The workbench keeps its ID and restores the saved scene after the renderer mounts. The toolbar shows when rendering is ready.
 - Load and align named objects, operate on assemblies and models, derive structures, and query atoms and residues. Inspect contacts, clashes, hydrogen bonds, RMSD, SASA, buried area, density, trajectories, validation and quality annotations, assembly symmetry, and public motif matches.
 - Edit representations, lighting, clipping, camera, ribbons, annotations, and animation. Use scene snapshots, undo and redo, and source-checked project save and restore. Export images, MP4, scenes, selected coordinates, split-model archives, visible geometry, and analysis CSV with provenance.
@@ -20,11 +20,12 @@ Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a
 | `examples` | List the three packaged starter workflows, IDs, and prompts. |
 | `context` | Read the active selection, annotations, measurements, and analysis summaries. |
 | `status` / `viewers` | Read renderer and recovery status or list the current conversation's workbenches. |
+| `guide` | Read guidance on operation choice, exact selections, residue SASA, pagination, and scene revisions. For a worked example use `{"action":"guide","topic":"sasa"}`. |
 | `wait` | Wait for the existing viewer to mount and render. Defaults to 8 seconds, with a 15-second maximum. |
 | `operations` / `help` | Find an operation and read its exact input schema. |
 | `run` | Run a typed `structure.*` operation. Use `structure.get_state` to obtain the current scene revision before revision-guarded changes. |
 
-To inspect a live scene, call `molecular_workbench` with `{"action":"run","operation":"structure.get_state"}`. Passing the operation name as `action`, or passing only `operation`, also works. Use `operations` or `help` before opening a viewer to look up available operations.
+To inspect a live scene, call `molecular_workbench` with `{"action":"run","operation":"structure.get_state"}`. Passing the operation name as `action`, or passing only `operation`, also works. Use `operations`, `help`, or `guide` before opening a viewer. For residue SASA, use the complete molecular environment as the first selection and the residues to report as the second selection.
 
 Opening the same unchanged source in the same DSH conversation and workspace reuses the existing viewer ID across turns. Pass a stable `openIntentId` UUID when retrying a request. Use `reopen: true` with a fresh `openIntentId` to create a separate workbench deliberately. Repeat that UUID to retry the same creation.
 

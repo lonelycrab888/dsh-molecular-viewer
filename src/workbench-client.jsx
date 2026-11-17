@@ -22,6 +22,8 @@ const label = zh ? {
   rendering: '正在连接并渲染…',
   renderError: '渲染失败',
   ask: '就选区提问',
+  previewAsk: '就此预览的选区提问',
+  cancel: '取消',
   question: '这个选区包含哪些结构特征？',
   send: '发送到对话',
   sent: '已发送选区问题',
@@ -45,6 +47,8 @@ const label = zh ? {
   rendering: 'Connecting and rendering…',
   renderError: 'Rendering failed',
   ask: 'Ask about selection',
+  previewAsk: 'Ask about this preview selection',
+  cancel: 'Cancel',
   question: 'What structural features are present in this selection?',
   send: 'Send to chat',
   sent: 'Selection question sent',
@@ -144,9 +148,9 @@ function ResidueDistance({ sessionId, viewerId, lastDistance }) {
   </div>
 }
 
-function ViewerToolbar({ sessionId, viewerId, examples, retry }) {
+function ViewerToolbar({ sessionId, viewerId, examples, retry, nativePreview }) {
   const [live, setLive] = useState(null)
-  const [expanded, setExpanded] = useState(false)
+  const [selection, setSelection] = useState(null)
   const [question, setQuestion] = useState(label.question)
   const [sending, setSending] = useState(false)
   const [feedback, setFeedback] = useState(null)
@@ -168,15 +172,17 @@ function ViewerToolbar({ sessionId, viewerId, examples, retry }) {
     return () => { abort.abort(); clearTimeout(timer) }
   }, [sessionId, viewerId])
 
+  const askLabel = nativePreview ? label.previewAsk : label.ask
   const renderFailed = live?.renderState === 'error'
   const starter = live?.starter
   async function submit(action, params) {
     setSending(true)
     setFeedback(null)
     try {
-      await workbenchApi(sessionId, viewerId, action, params)
+      const result = await workbenchApi(sessionId, viewerId, action, params)
+      if (action === 'capture-selection') setSelection(result)
       if (action === 'ask-selection') {
-        setExpanded(false)
+        setSelection(null)
         setFeedback({ message: label.sent })
       }
     } catch (error) {
@@ -189,8 +195,8 @@ function ViewerToolbar({ sessionId, viewerId, examples, retry }) {
     <div className="mv-workbench-measure">
       <span role="status" title={live?.error ?? live?.state?.lastFailure?.message}>{renderFailed ? label.renderError : live?.viewerReady ? label.ready : label.rendering}</span>
       {renderFailed && <button type="button" onClick={retry}>{label.retry}</button>}
-      <button type="button" aria-expanded={expanded} disabled={!live?.viewerReady}
-        onClick={() => { setFeedback(null); setExpanded(value => !value) }}>{label.ask}</button>
+      <button type="button" aria-expanded={!!selection} disabled={sending || !live?.viewerReady}
+        onClick={() => selection ? setSelection(null) : void submit('capture-selection', {})}>{askLabel}</button>
       {!!examples?.length && <details>
         <summary>{label.examples}</summary>
         <div className="mv-workbench-examples">
@@ -200,12 +206,16 @@ function ViewerToolbar({ sessionId, viewerId, examples, retry }) {
       </details>}
       {feedback && <span role={feedback.error ? 'alert' : 'status'}>{feedback.error ?? feedback.message}</span>}
     </div>
-    {expanded && <form className="mv-workbench-measure" onSubmit={event => {
+    {selection && <form className="mv-workbench-measure" onSubmit={event => {
       event.preventDefault()
-      void submit('ask-selection', { question })
+      void submit('ask-selection', { question, selectionId: selection.selectionId })
     }}>
-      <input aria-label={label.ask} value={question} maxLength={1000} onChange={event => setQuestion(event.target.value)} />
+      <div className="mv-selection-snapshot">
+        <strong>{selection.source ?? selection.structure}</strong> · {selection.summary}
+      </div>
+      <input aria-label={askLabel} value={question} maxLength={1000} onChange={event => setQuestion(event.target.value)} />
       <button type="submit" disabled={sending || !question.trim()}>{label.send}</button>
+      <button type="button" disabled={sending} onClick={() => setSelection(null)}>{label.cancel}</button>
     </form>}
     {starter && starter.phase !== 'pending' && <div className="mv-workbench-starter" role={starter.phase === 'error' ? 'alert' : 'status'}>
       {starter.phase === 'running' ? `${label.running} ${starter.step}/${starter.total}`
@@ -215,7 +225,7 @@ function ViewerToolbar({ sessionId, viewerId, examples, retry }) {
   </div>
 }
 
-function FullWorkbench({ endpoint, sessionId, viewerId, data, layout, title, move, retry, reveal }) {
+function FullWorkbench({ endpoint, sessionId, viewerId, data, layout, title, move, retry, reveal, nativePreview }) {
   const frame = useRef(null)
   const container = useRef(null)
   const mode = useRef(layout === 'pane' && move ? 'fullscreen' : 'inline')
@@ -373,14 +383,14 @@ function FullWorkbench({ endpoint, sessionId, viewerId, data, layout, title, mov
     {fullscreen && <button type="button" className="mv-workbench-exit" onClick={() => setMode.current?.('inline')}>
       {label.closeFullscreen}
     </button>}
-    <ViewerToolbar sessionId={sessionId} viewerId={viewerId} examples={data.examples} retry={retry} />
+    <ViewerToolbar sessionId={sessionId} viewerId={viewerId} examples={data.examples} retry={retry} nativePreview={nativePreview} />
     {moveError && <div className="mv-empty" role="alert">{moveError}</div>}
     <ResidueDistance sessionId={sessionId} viewerId={viewerId} lastDistance={data.lastDistance} />
     <iframe title={title || label.title} ref={frame} sandbox="allow-scripts allow-downloads" allow="clipboard-write *" referrerPolicy="no-referrer" />
   </div>
 }
 
-function WorkbenchFrame({ sessionId, id, layout, title, move, reveal }) {
+function WorkbenchFrame({ sessionId, id, layout, title, move, reveal, nativePreview }) {
   const [retry, setRetry] = useState(0)
   const endpoint = `${WORKBENCH_ROUTE}/${encodeURIComponent(sessionId)}/${id}`
   const state = useWorkbenchData(`${endpoint}/setup`, undefined, retry)
@@ -389,7 +399,7 @@ function WorkbenchFrame({ sessionId, id, layout, title, move, reveal }) {
   </div>
   if (!state?.data) return <p className="mv-empty" role="status">{label.loading}</p>
   return <FullWorkbench endpoint={endpoint} sessionId={sessionId} viewerId={id} data={state.data} layout={layout}
-    title={title} move={move} reveal={reveal} retry={() => setRetry(value => value + 1)} />
+    title={title} move={move} reveal={reveal} nativePreview={nativePreview} retry={() => setRetry(value => value + 1)} />
 }
 
 function sessionCards() {
@@ -551,7 +561,7 @@ function NativePreview({ sessionId, resourceAddress, content }) {
   </div>
   if (!state?.data) return <p className="mv-empty" role="status">{label.loading}</p>
   const { scene } = state.data
-  return <WorkbenchFrame sessionId={sessionId} id={scene.id} title={scene.title} layout="pane" />
+  return <WorkbenchFrame sessionId={sessionId} id={scene.id} title={scene.title} layout="pane" nativePreview />
 }
 
 export function registerWorkbenchClient(ctx) {
@@ -586,6 +596,7 @@ export const WORKBENCH_STYLE = `
 .mv-workbench-toolbar details { position: relative; }
 .mv-workbench-toolbar summary { cursor: pointer; }
 .mv-workbench-examples { display: grid; gap: 4px; padding: 6px 0; }
+.mv-selection-snapshot { flex-basis: 100%; overflow-wrap: anywhere; }
 .mv-workbench-toolbar input { min-width: 12em; flex: 1; }
 .mv-workbench-starter { max-height: 88px; overflow: auto; padding: 4px 8px; font-size: 12px; }
 .mv-workbench-starter ul { margin: 4px 0; padding-inline-start: 18px; }

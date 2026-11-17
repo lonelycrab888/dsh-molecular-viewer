@@ -48,7 +48,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node --check src/index.js && node --check src/download.js && node --check src/transcript.js && node --check src/workbench.js && node --check src/starter-examples.js && node --check src/workbench-engine.js && node --check src/workbench-contract.js && node --check scripts/patch-structure-viewer.mjs"
+    "check": "node --check src/index.js && node --check src/download.js && node --check src/transcript.js && node --check src/workbench.js && node --check src/starter-examples.js && node --check src/workbench-engine.js && node --check src/workbench-contract.js && node --check src/workbench-guidance.js && node --check scripts/patch-structure-viewer.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2"
