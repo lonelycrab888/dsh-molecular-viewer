@@ -17,11 +17,12 @@
 - `molecular_workbench` 的 `open` 打开源或示例。新工作台可用 `placement: "sidebar"` 直接在右侧栏打开。
 - `examples` 列出三个内置示例、ID 和提示词。
 - `context` 读取选区、标注和测量等现场状态。`status` 查看渲染与恢复状态，`viewers` 列出本会话的工作台。
+- `wait` 等待指定的工作台挂载并渲染，默认 8 秒，最长 15 秒。
 - `operations` 列出结构操作，`help` 给出指定操作的参数说明，`run` 执行操作。修改场景前可运行 `structure.get_state`，取得可用于修订校验的场景版本。需要指定某张工作台卡片时传入 `viewerId`。
 
 同一 DSH 对话和工作区内，跨轮打开同一份未改动的结构会复用工作台 ID。发送重试请求时沿用同一个 `openIntentId` UUID。要显式新建独立工作台，传入 `reopen: true` 和新的 `openIntentId`。重试这次新建时仍使用该 UUID。
 
-`open` 分开报告会话已创建和画布渲染就绪。执行场景操作前，可用 `status` 查看 `viewerReady`、`mountState` 和 `renderState`。
+`open` 返回后，工作台卡片立即进入对话，`run_code` 中的调用也是如此。打开结果会分别报告会话创建和渲染就绪。如果 `viewerReady` 为 `false`，用返回的 `viewerId` 调用 `wait`。若工作台仍在等待显示，在 DSH 中展开同一个卡片或侧栏，再用原 ID 继续。画布就绪前，场景操作会直接返回状态码，不会加入渲染器的命令队列。`status` 可查询 `surfaceState`、`mountState` 和 `renderState`。
 
 例如，`{"action":"run","operation":"structure.get_state"}` 读取当前场景。也可把 `structure.get_state` 直接填入 `action`，或只传 `operation`。打开结构之前即可调用 `operations` 和 `help`。
 
@@ -41,7 +42,7 @@
 
 ## 文件与恢复
 
-工作台操作以当前 DSH 工作区为文件范围。按 PDB ID、HTTPS URL 或内联文本打开时，需要可写工作区，导入副本存入 `.dsh-molecular-sources/` 供会话恢复。已有本地结构可在只读会话中查看。文件原件保持原有内容，分析、渲染和导出产生独立文件。导出的来源记录会注明 DSH Molecular Viewer 及其所用的 OpenAI Codex Molecular Structure Viewer 0.1.96 运行时，坐标文件也带有相应标注。
+工作台操作以当前 DSH 工作区为文件范围。要打开下载目录等工作区外的本地结构，点击输入区旁的 **导入结构文件**，可一次选择多个文件。插件把选中的文件复制到工作区并显示相对路径，可用于 `open` 和 `structure.add_structure`。每个文件上限为 40 MiB。按 PDB ID、HTTPS URL 或内联文本打开时，需要可写工作区，导入副本存入 `.dsh-molecular-sources/` 供会话恢复。已有本地结构可在只读会话中查看。文件原件保持原有内容，分析、渲染和导出产生独立文件。导出的来源记录会注明 DSH Molecular Viewer 及其所用的 OpenAI Codex Molecular Structure Viewer 0.1.96 运行时，坐标文件也带有相应标注。
 
 正常编辑时，工作台会保存本地恢复状态。再次打开原卡片时会检查源文件和依赖是否仍然有效。需要长期保存或移交场景时可显式保存结构项目。视频编码和较大的结构取决于浏览器与本机硬件。
 

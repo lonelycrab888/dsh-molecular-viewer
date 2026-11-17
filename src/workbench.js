@@ -2,18 +2,21 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
+import { setTimeout as delay } from 'node:timers/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { downloadStructureBytes, MAX_STRUCTURE_BYTES } from './download.js'
 import { connectWorkbench } from './workbench-engine.js'
 import { prepareStarter, runStarter, starters } from './starter-examples.js'
 import { PLUGIN_ID, STRUCTURE_EXTENSIONS, WORKBENCH_ROUTE, WORKBENCH_TOOL, workbenchId } from './workbench-contract.js'
 
-const workbenchActions = new Set(['open', 'viewers', 'status', 'context', 'operations', 'help', 'run', 'examples'])
+const workbenchActions = new Set(['open', 'viewers', 'status', 'wait', 'context', 'operations', 'help', 'run', 'examples'])
 const shorthandOperations = new Map([
   ['status', 'structure.get_viewer_status'],
   ['context', 'structure.get_context'],
 ])
+const MAX_READY_WAIT_MS = 15_000
 const openIntentUuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+const rendererIndependent = new Set(['structure.get_render_job_control', 'structure.cancel_render'])
 const blockedOpen = new Set(['structure.open', 'structure.open_from_chat', 'structure.open_in_side_pane'])
 const publishingOperations = new Set([
   'structure.export', 'structure.render_image', 'structure.render_movie', 'structure.load_public_density',
@@ -35,7 +38,9 @@ function containsPath(root, absolutePath) {
 
 async function sourcePath(root, address) {
   const file = await realpath(resolve(root, address))
-  if (!containsPath(root, file)) throw new Error('Choose a structure inside this DSH workspace.')
+  if (!containsPath(root, file)) {
+    throw Object.assign(new Error('This structure is outside the current DSH workspace. Use Import structures beside the DSH composer, or open its containing directory as a DSH workspace and retry.'), { code: 'outside_workspace' })
+  }
   if (!(await stat(file)).isFile()) throw new Error('Choose a regular structure file.')
   return file
 }
@@ -71,6 +76,10 @@ async function importStructure(root, source, signal) {
     if (Buffer.byteLength(source.text) > MAX_STRUCTURE_BYTES) throw new Error('Structure file exceeds the 40 MiB limit.')
     bytes = Buffer.from(source.text)
   }
+  return stageStructure(root, name, bytes, signal)
+}
+
+async function stageStructure(root, name, bytes, signal) {
   signal?.throwIfAborted()
   const base = join(root, '.dsh-molecular-sources')
   await mkdir(base, { mode: 0o700 }).catch(error => {
@@ -256,21 +265,22 @@ const tool = {
   description: [
     'Open and control the live Mol* Molecular Structure Workbench in DSH.',
     'Use open with a workspace file path, RCSB PDB ID, public HTTPS URL, inline PDB/mmCIF, or exampleId "gfp-1ema".',
-    'Repeated opens of the same unchanged source in the same conversation reuse its workbench. Use reopen with a fresh openIntentId for a separate viewer. Use status to confirm the renderer is ready before scene operations. Reuse its viewerId for comparison, scientific analysis and rendering.',
+    'Repeated opens of the same unchanged source in the same conversation reuse its workbench. Use reopen with a fresh openIntentId for a separate viewer. After open, if viewerReady is false, call wait once for that viewerId before scene operations. If it is still pending, ask the user to show the existing card in DSH and resume after rendering is ready. Compare structures by adding them to that same viewer.',
     'Use context after the user selects or measures something in the viewer. Prefer this tool for new interactive visualizations.',
     'Use action "operations" to list operations or action "help" with an operation name to obtain its input schema. Both work before opening a viewer.',
     'Use action examples to list packaged starters. Pass a starter exampleId to open and run it in one workbench. For example, inspect a live viewer with {"action":"run","operation":"structure.get_state"}. The operation name can also be passed as action, or by itself in operation.',
-    'For revision-guarded operations, read structure.get_state first. Pass a DSH viewerId only when targeting a specific viewer.',
+    'For revision-guarded operations, read structure.get_state after viewerReady is true. Use only successful live results when reporting plugin measurements or exports.',
   ].join(' '),
   parameters: {
     type: 'object',
     additionalProperties: false,
     properties: {
-      action: { type: 'string', description: 'open, viewers, status, context, operations, help, run, or examples. Also accepts a structure.* operation name as a shortcut.' },
+      action: { type: 'string', description: 'open, viewers, status, wait, context, operations, help, run, or examples. Also accepts a structure.* operation name as a shortcut.' },
       source: { type: 'string', description: 'A workspace file, RCSB PDB ID, public HTTPS URL, or inline PDB/mmCIF text.' },
       exampleId: { type: 'string', description: 'Use gfp-1ema for the bundled structure. Use action examples for the three guided workflows.' },
       viewerId: { type: 'string', description: 'DSH viewer ID from open or viewers. Defaults to the active viewer.' },
       placement: { type: 'string', enum: ['inline', 'sidebar'], description: 'Initial location for a newly opened viewer. Defaults to inline.' },
+      waitTimeoutMs: { type: 'integer', minimum: 0, maximum: MAX_READY_WAIT_MS, description: 'Maximum time to wait for rendering with action wait. Defaults to 8000 milliseconds.' },
       openIntentId: { type: 'string', description: 'Optional UUID for the open request. Reuse it for retries.' },
       reopen: { type: 'boolean', description: 'Create a separate workbench with a fresh openIntentId.' },
       operation: { type: 'string', description: 'For help, run, or when action is omitted. For example, structure.get_state.' },
@@ -297,6 +307,7 @@ const tool = {
     }],
     presentationMeta: (_args, value) => ({
       plugin: PLUGIN_ID, ok: value.ok, action: value.action, summary: value.summary, scene: value.scene ?? null,
+      waitingForViewer: value.data?.retryable === true,
     }),
   },
 }
@@ -460,19 +471,74 @@ export function registerWorkbench(ctx, turns) {
 
   function viewerLifecycle(record, state) {
     const renderer = renderers.get(record.id)
-    const pending = renderer && (!renderer.attached || state?.rendererIncarnationId === renderer.previousIncarnation)
-    const mounted = !pending && state?.mounted?.status === 'mounted' && state.mounted.hydrated === true
-    const renderState = pending ? 'pending' : state?.rendered?.status ?? 'pending'
+    const attached = renderer?.attached === true
+    const stale = renderer && (!attached || renderer.previousIncarnation === undefined ||
+      (renderer.previousIncarnation !== null && state?.rendererIncarnationId === renderer.previousIncarnation) ||
+      (state?.rendererIncarnationId == null && state?.rendered?.observedAtMs < renderer.attachedAt))
+    const mounted = !stale && state?.mounted?.status === 'mounted' && state.mounted.hydrated === true
+    const renderState = stale ? 'pending' : state?.rendered?.status ?? 'pending'
+    const viewerReady = mounted && renderState === 'ready'
     return {
-      viewerReady: mounted && renderState === 'ready',
+      viewerReady,
       mountState: mounted ? 'mounted' : 'mount-pending',
       renderState,
+      surfaceState: viewerReady ? 'ready'
+        : renderState === 'error' ? 'render-failed'
+          : mounted ? 'rendering'
+            : attached ? 'mounting' : 'awaiting-surface',
     }
   }
 
-  async function readiness(engine, record, signal) {
+  async function readViewerStatus(engine, record, signal) {
     const result = await callForViewer(engine, record, 'structure.get_viewer_status', {}, signal)
-    return viewerLifecycle(record, result.isError ? undefined : result.structuredContent)
+    if (result.isError || !result.structuredContent) {
+      const { summary } = publicResult('status', result)
+      // On host restart the durable card is known before its renderer restores the engine session.
+      if (!summary.includes('viewer session is not available to this connection')) throw new Error(summary)
+      const state = {
+        sessionId: record.sessionId, accepted: false, rendererIncarnationId: null,
+        mounted: { status: 'pending', hydrated: false, observedAtMs: null },
+        rendered: { status: 'pending', renderRevision: null, observedAtMs: null },
+        pendingCommands: 0, deliveredCommands: 0, lastFailure: null,
+      }
+      return { ...state, ...viewerLifecycle(record, state) }
+    }
+    const state = result.structuredContent
+    return { ...state, ...viewerLifecycle(record, state) }
+  }
+
+  function pendingViewer(action, record, status) {
+    const failed = status.surfaceState === 'render-failed'
+    const code = failed ? 'viewer_render_failed'
+      : status.mountState === 'mounted' ? 'viewer_render_pending' : 'viewer_mount_pending'
+    const summary = failed
+      ? 'Rendering failed. Use Retry on the existing workbench, then check its status.'
+      : status.surfaceState === 'awaiting-surface'
+        ? 'The workbench session is open and needs its DSH card or sidebar visible. Show the existing workbench, then wait for it to render.'
+        : 'The existing workbench is loading. Use action "wait" or continue once viewerReady is true.'
+    return {
+      ok: false, action, summary,
+      data: {
+        code, retryable: !failed, viewerId: record.id, ...status,
+      },
+    }
+  }
+
+  async function waitForViewer(engine, record, args, signal) {
+    const timeout = args.waitTimeoutMs ?? 8000
+    if (!Number.isInteger(timeout) || timeout < 0 || timeout > MAX_READY_WAIT_MS) {
+      throw new Error(`waitTimeoutMs must be an integer from 0 to ${MAX_READY_WAIT_MS}.`)
+    }
+    const deadline = performance.now() + timeout
+    for (;;) {
+      const status = await readViewerStatus(engine, record, signal)
+      if (status.viewerReady) {
+        return { ok: true, action: args.action, summary: 'The workbench is mounted and rendered.', data: { viewerId: record.id, ...status } }
+      }
+      const remaining = deadline - performance.now()
+      if (status.renderState === 'error' || remaining <= 0) return pendingViewer(args.action, record, status)
+      await delay(Math.min(250, remaining), undefined, { signal })
+    }
   }
 
   async function openForAgent(agent, root, args, turn, signal) {
@@ -496,7 +562,7 @@ export function registerWorkbench(ctx, turns) {
       if (existing) {
         const { record, directory } = existing
         const engine = await engineFor(directory, root)
-        const live = await readiness(engine, record, signal)
+        const live = await readViewerStatus(engine, record, signal)
         const present = !live.viewerReady && record.cardTurn !== turn
         if (intent && record.args.openIntentId !== intent && !record.openIntentAliases?.includes(intent)) {
           record.openIntentAliases = [...(record.openIntentAliases ?? []), intent]
@@ -512,7 +578,7 @@ export function registerWorkbench(ctx, turns) {
       }
       const record = await createAgentWorkbench(agent, root, { ...args, openIntentId: intent }, source, turn, signal)
       return { record, reused: false, present: true, live: {
-        viewerReady: false, mountState: 'presentation-issued', renderState: 'pending',
+        viewerReady: false, mountState: 'presentation-issued', renderState: 'pending', surfaceState: 'awaiting-surface',
       } }
     })()
     openRequests.set(lock, task)
@@ -620,10 +686,10 @@ export function registerWorkbench(ctx, turns) {
         ok: true,
         action: args.action,
         summary: `${reused ? 'Reusing' : 'Opening'} ${record.title} in the Molecular Structure Workbench. ${live.viewerReady
-          ? 'The viewer is ready.' : 'Wait for the renderer and check status before controlling the scene.'}`,
+          ? 'The viewer is ready.' : 'The card has been issued. Use action "wait" for this viewerId before scene operations.'}`,
         data: {
           viewerId: record.id, title: record.title, placement: record.placement, reused,
-          sessionReady: true, viewerReady: live.viewerReady,
+          sessionReady: live.accepted !== false, viewerReady: live.viewerReady, surfaceState: live.surfaceState,
           viewerOpen: {
             disposition: reused ? 'reused' : 'created', intentId: args.openIntentId ?? record.args.openIntentId,
             mountState: live.mountState, renderState: live.renderState,
@@ -650,21 +716,40 @@ export function registerWorkbench(ctx, turns) {
     const current = records.find(item => item.record.id === active?.id) ?? records[0]
     if (!current) throw new Error('Open a molecular workbench first.')
     const engine = await engineFor(current.directory, root)
+    const { record, directory } = current
+    if (args.action === 'wait') return waitForViewer(engine, record, args, exec.signal)
     const { operation } = args
     requireOperation(engine, operation)
+    if (operation === 'structure.get_viewer_status') {
+      const status = await readViewerStatus(engine, record, exec.signal)
+      return {
+        ok: true, action: args.action,
+        summary: status.viewerReady ? 'The workbench is mounted and rendered.'
+          : pendingViewer(args.action, record, status).summary,
+        data: { viewerId: record.id, ...status, ...(record.starterId ? { starter: await starterStatus(directory) } : {}) },
+      }
+    }
     const input = args.arguments ?? (args.action === 'context'
       ? { sections: ['overview', 'selection', 'annotations', 'results'] }
       : {})
     if (publishingOperations.has(operation) || (operation === 'structure.project' && input.action === 'save')) {
       requireWorkspaceWrite(agent)
     }
-    const result = await runForViewer(engine, current.record, current.directory, operation, input, exec.signal)
-    const reply = publicResult(args.action, result)
-    if (reply.ok && operation === 'structure.get_viewer_status') {
-      reply.data = { ...reply.data, ...viewerLifecycle(current.record, reply.data) }
+    if (!rendererIndependent.has(operation)) {
+      const status = await readViewerStatus(engine, record, exec.signal)
+      if (!status.viewerReady) return pendingViewer(args.action, record, status)
     }
-    if (reply.ok && current.record.starterId && (operation === 'structure.get_viewer_status' || operation === 'structure.get_context')) {
-      reply.data = { ...reply.data, starter: await starterStatus(current.directory) }
+    const result = await runForViewer(engine, record, directory, operation, input, exec.signal)
+    const reply = publicResult(args.action, result)
+    if (reply.ok && operation === 'structure.get_state' && !Number.isInteger(reply.data?.state?.sceneRevision)) {
+      return {
+        ok: false, action: args.action,
+        summary: 'The renderer did not return a scene revision. Check the existing workbench status before issuing scene changes.',
+        data: { code: 'viewer_state_unavailable', viewerId: record.id },
+      }
+    }
+    if (reply.ok && record.starterId && operation === 'structure.get_context') {
+      reply.data = { ...reply.data, starter: await starterStatus(directory) }
     }
     return reply
   }
@@ -706,7 +791,10 @@ export function registerWorkbench(ctx, turns) {
         action = args.action
         return await execute(args, exec)
       } catch (error) {
-        return { ok: false, action, summary: errorText(error) }
+        return {
+          ok: false, action, summary: errorText(error),
+          ...(error.code === 'outside_workspace' ? { data: { code: error.code } } : {}),
+        }
       }
     },
   })
@@ -716,8 +804,8 @@ export function registerWorkbench(ctx, turns) {
     text: context => {
       if (!context.agent) return ''
       const current = activeRecord(context.agent.id)
-      if (!current) return ''
-      return `A live Mol* Molecular Structure Workbench is available in this DSH conversation. For questions about the user's current selection or measurements, call molecular_workbench with action=context. The active workbench is ${JSON.stringify(current.title)} (viewerId ${current.id}).`
+      const instructions = 'For molecular_workbench, call action "wait" with the returned viewerId after an open reports viewerReady=false. Use scene operations only when viewerReady=true. If wait returns pending, let the user show the existing DSH card and resume when ready. Keep the same viewerId when adding or comparing structures.'
+      return current ? `${instructions} The active workbench is ${JSON.stringify(current.title)} (viewerId ${current.id}). Use action=context for questions about the current selection or measurements.` : instructions
     },
   }))
 
@@ -758,6 +846,47 @@ export function registerWorkbench(ctx, turns) {
         }
       },
     })
+    const disposeImport = ctx.webServer.register({
+      kind: 'exact',
+      path: `${WORKBENCH_ROUTE}/import`,
+      handler: async (request, response) => {
+        const abort = new AbortController()
+        response.once('close', () => abort.abort())
+        async function upload() {
+          const rejection = ctx.connection.requestRejection(request)
+          if (rejection !== undefined) return json({ error: 'Open an authenticated DSH conversation.' }, rejection)
+          if (request.method !== 'POST') return json({ error: 'Use POST.' }, 405)
+          if (request.headers['content-type'] !== 'application/octet-stream') return json({ error: 'Upload a structure file.' }, 415)
+          const { searchParams } = new URL(request.url, 'http://localhost')
+          const agent = ctx.agents.get(searchParams.get('sessionId'))
+          if (!agent) return json({ error: 'Open the owning DSH conversation before importing files.' }, 404)
+          requireWorkspaceWrite(agent)
+          const root = await resolveRoot(agent, abort.signal)
+          const name = (searchParams.get('name') ?? '').replace(/[^a-z0-9._-]/gi, '_').slice(-150)
+          if (!STRUCTURE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(`.${ext}`))) {
+            return json({ error: 'Choose a supported molecular structure file.' }, 400)
+          }
+          if (Number(request.headers['content-length']) > MAX_STRUCTURE_BYTES) {
+            return json({ error: 'Structure file exceeds the 40 MiB limit.' }, 413)
+          }
+          const chunks = []
+          let size = 0
+          for await (const chunk of request) {
+            size += chunk.length
+            if (size > MAX_STRUCTURE_BYTES) return json({ error: 'Structure file exceeds the 40 MiB limit.' }, 413)
+            chunks.push(chunk)
+          }
+          if (size === 0) return json({ error: 'The structure file is empty.' }, 400)
+          const { file } = await stageStructure(root, name, Buffer.concat(chunks, size), abort.signal)
+          return json({ source: relative(root, file) })
+        }
+        const result = await upload().catch(error => json({ error: errorText(error) }, 400))
+        if (!abort.signal.aborted) {
+          response.writeHead(result.status, Object.fromEntries(result.headers))
+          response.end(await result.text())
+        }
+      },
+    })
     const disposeApi = ctx.webServer.register({
       kind: 'exact',
       path: `${WORKBENCH_ROUTE}/api`,
@@ -788,22 +917,20 @@ export function registerWorkbench(ctx, turns) {
           const engine = await engineFor(directory, record.root)
           if (action === 'attach-renderer') {
             if (typeof token !== 'string' || !openIntentUuid.test(token)) throw new Error('Invalid renderer ID.')
-            const renderer = { token, attached: true, previousIncarnation: null }
+            const renderer = { token, attached: true, attachedAt: Date.now(), previousIncarnation: undefined }
             renderers.set(record.id, renderer)
-            const result = await callForViewer(engine, record, 'structure.get_viewer_status', {}, abort.signal)
-            renderer.previousIncarnation = result.structuredContent?.rendererIncarnationId ?? null
+            const state = await readViewerStatus(engine, record, abort.signal)
+            renderer.previousIncarnation = state.rendererIncarnationId ?? null
             return json({ ok: true })
           }
           if (action === 'status') {
-            const result = await callForViewer(engine, record, 'structure.get_viewer_status', {}, abort.signal)
-            if (result.isError) throw new Error(publicResult('status', result).summary)
-            const state = result.structuredContent
-            const live = viewerLifecycle(record, state)
-            const starter = record.starterId ? await maybeStartExample(engine, record, directory, live) : undefined
+            const state = await readViewerStatus(engine, record, abort.signal)
+            const starter = record.starterId ? await maybeStartExample(engine, record, directory, state) : undefined
             const publicStarter = starter?.phase === 'complete' ? {
               phase: 'complete', results: starter.results.map(({ tool, summary }) => ({ tool, summary })),
             } : starter
-            return json({ state, ...live, starter: publicStarter })
+            const { viewerReady, mountState, renderState, surfaceState } = state
+            return json({ state, viewerReady, mountState, renderState, surfaceState, starter: publicStarter })
           }
           if (action === 'launch-example') {
             const starter = starters.get(exampleId)
@@ -854,6 +981,7 @@ export function registerWorkbench(ctx, turns) {
     })
     return () => {
       disposeApi()
+      disposeImport()
       disposeResources()
       for (const task of starterRuns.values()) task.controller.abort()
       for (const engine of engines.values()) void engine.then(item => item.close()).catch(() => {})

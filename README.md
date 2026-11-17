@@ -20,6 +20,7 @@ Ask the agent to open a PDB or mmCIF file in the molecular workbench, or click a
 | `examples` | List the three packaged starter workflows, IDs, and prompts. |
 | `context` | Read the active selection, annotations, measurements, and analysis summaries. |
 | `status` / `viewers` | Read renderer and recovery status or list the current conversation's workbenches. |
+| `wait` | Wait for the existing viewer to mount and render. Defaults to 8 seconds, with a 15-second maximum. |
 | `operations` / `help` | Find an operation and read its exact input schema. |
 | `run` | Run a typed `structure.*` operation. Use `structure.get_state` to obtain the current scene revision before revision-guarded changes. |
 
@@ -27,7 +28,7 @@ To inspect a live scene, call `molecular_workbench` with `{"action":"run","opera
 
 Opening the same unchanged source in the same DSH conversation and workspace reuses the existing viewer ID across turns. Pass a stable `openIntentId` UUID when retrying a request. Use `reopen: true` with a fresh `openIntentId` to create a separate workbench deliberately. Repeat that UUID to retry the same creation.
 
-An `open` result reports whether the session exists and whether its renderer is ready separately. Check `viewerReady`, `mountState` and `renderState` with `status` before applying scene commands.
+The DSH card appears as soon as the opening tool returns, including for calls made from `run_code`. `open` reports session creation and rendering readiness separately. If `viewerReady` is false, call `wait` with the returned `viewerId` and continue once it reports true. If the viewer still needs a visible DSH surface, show the existing card or sidebar and use the same ID. A scene command sent before readiness returns a lifecycle code without entering the renderer queue. `status` reports `surfaceState`, `mountState`, and `renderState` without sending a scene command.
 
 Compare structures by opening one viewer, then running `structure.add_structure` and `structure.align_structures` in that same viewer. Pass `viewerId` when targeting a particular card.
 
@@ -51,7 +52,7 @@ Inputs and any exported files are in the workspace under `structure-viewer-examp
 
 ## Data and recovery
 
-The Host confines workbench file operations to the current DSH workspace. Use a writable workspace to import an accession, HTTPS download, or inline coordinates. The imported copy is recorded in `.dsh-molecular-sources/` so the scene can reopen. Local files can be opened in read-only conversations. Exports are separate workspace files. Source files remain intact. Saved export and render sidecars identify DSH Molecular Viewer and the upstream OpenAI Codex Molecular Structure Viewer 0.1.96 runtime. Coordinate exports also carry the attribution in their own metadata.
+The Host confines workbench file operations to the current DSH workspace. Use **Import structures** beside the DSH composer to select local structure files from another folder. It copies the selected files into the workspace and shows their relative paths for `open` and `structure.add_structure`. Each input can be up to 40 MiB. Use a writable workspace to import an accession, HTTPS download, or inline coordinates. The imported copy is recorded in `.dsh-molecular-sources/` so the scene can reopen. Local files can be opened in read-only conversations. Exports are separate workspace files. Source files remain intact. Saved export and render sidecars identify DSH Molecular Viewer and the upstream OpenAI Codex Molecular Structure Viewer 0.1.96 runtime. Coordinate exports also carry the attribution in their own metadata.
 
 The workbench keeps private recovery checkpoints in the local DSH cache. Reopening a card validates the source and dependencies. Save a structure project for long-term, portable recovery. Public density and annotations require their associated sources. Video encoding and performance depend on the browser and local hardware.
 
