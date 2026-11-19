@@ -1,5 +1,7 @@
 # 分子结构查看器
 
+[English](README.md)
+
 在 DeepSeek Harness 的对话、右侧栏和文件预览中查看、比较和分析三维分子结构。分子工作台使用 Codex Molecular Structure Viewer 0.1.96 所用的 Mol* 运行时。模型在本机浏览器的 WebGL 画布中渲染，DSH Host 管理工作区文件和保存结果。
 
 ## 使用
@@ -49,9 +51,9 @@
 
 ## 安装
 
-v0.2.4 适配 DSH 0.2.2-rc.5。工作台请求和结构文件导入使用 DSH 的共享连接通道，内嵌画布通过该通道加载 HTML，并在沙箱框架中运行。
+插件 **v0.2.4** 的安装包声明使用 **DSH v0.2.2-rc.5**。Desktop 和 Web 的工作台命令、渲染资源加载和结构文件上传均使用 DSH 的共享连接，内嵌渲染器在沙箱框架中运行。
 
-使用 Desktop 时，先启动新版 DSH 一次完成配置初始化，再完全退出应用后安装。
+将以下命令中的 `/path/to/` 替换为 v0.2.4 安装包所在的目录。使用 Desktop 时，先启动新版 DSH 一次完成配置初始化，再完全退出应用后安装。
 
 ```sh
 dsh plugin --profile desktop add /path/to/dsh-molecular-viewer-0.2.4.tgz
@@ -62,6 +64,8 @@ dsh plugin --profile desktop add /path/to/dsh-molecular-viewer-0.2.4.tgz
 ```sh
 dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.4.tgz
 ```
+
+安装后可在对话中打开 `gfp-1ema` 示例，等待三维结构渲染。点击 **Open viewer** 移到侧栏，再用 **Return to chat** 确认场景能在对话中恢复。在可写工作区中，可用 **导入结构文件** 验证本地文件上传。
 
 ## 许可证
 

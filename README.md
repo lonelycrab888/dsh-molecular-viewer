@@ -1,5 +1,7 @@
 # Molecular Structure Viewer
 
+[简体中文](README.zh.md)
+
 Open, inspect, compare, and analyze molecular structures from a DeepSeek Harness conversation, right sidebar, or workspace-file preview. The workbench uses the Mol* runtime from Codex Molecular Structure Viewer 0.1.96. WebGL rendering runs in the local browser. The DSH Host brokers workspace-file access and saves published artifacts.
 
 ## Inline 3D viewer
@@ -59,9 +61,9 @@ The workbench keeps private recovery checkpoints in the local DSH cache. Reopeni
 
 ## Install
 
-Version 0.2.4 targets DSH 0.2.2-rc.5. Workbench requests and raw structure imports use DSH's shared connection routes. The embedded viewer loads its HTML through that connection and runs in a sandboxed frame.
+Install plugin **v0.2.4** on **DSH v0.2.2-rc.5**. This is the host version declared in the package manifest. The workbench uses DSH's shared connection for commands, viewer resources, and structure uploads in both Desktop and Web. The embedded renderer runs in a sandboxed frame.
 
-For Desktop, open the updated DSH application once to initialize its profile, then fully quit it before installing.
+Replace `/path/to/` in the commands below with the directory containing the v0.2.4 installation archive. For Desktop, open the updated DSH application once to initialize its profile, then fully quit it before installing.
 
 ```sh
 dsh plugin --profile desktop add /path/to/dsh-molecular-viewer-0.2.4.tgz
@@ -72,6 +74,8 @@ Restart Desktop after installation. For the Web interface, install into its own 
 ```sh
 dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.4.tgz
 ```
+
+To check the installation, open the `gfp-1ema` starter in a conversation and wait for the 3D structure to render. Move it to the sidebar with **Open viewer**, then select **Return to chat** to check that the scene restores inline. In a writable workspace, **Import structures** can verify local file uploads.
 
 ## Development and licensing
 
