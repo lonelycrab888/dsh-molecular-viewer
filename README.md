@@ -61,7 +61,7 @@ The workbench keeps private recovery checkpoints in the local DSH cache. Reopeni
 
 ## Install
 
-Install plugin **v0.2.4** on **DSH v0.2.2-rc.5**. This is the host version declared in the package manifest. The workbench uses DSH's shared connection for commands, viewer resources, and structure uploads in both Desktop and Web. The embedded renderer runs in a sandboxed frame.
+Plugin **v0.2.4** requires **DSH v0.2.2-rc.5 or later**. The workbench uses DSH's shared connection for commands, viewer resources, and structure uploads in both Desktop and Web. The embedded renderer runs in a sandboxed frame.
 
 Replace `/path/to/` in the commands below with the directory containing the v0.2.4 installation archive. For Desktop, open the updated DSH application once to initialize its profile, then fully quit it before installing.
 
