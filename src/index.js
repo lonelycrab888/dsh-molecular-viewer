@@ -1,6 +1,6 @@
 import { registerWorkbench } from './workbench.js'
 
-export const inject = ['tools', 'webServer', 'connection', 'systemPrompt', 'workingDirectory', 'agents', 'workspaceFiles', 'sandboxPolicy']
+export const inject = ['tools', 'connection', 'systemPrompt', 'workingDirectory', 'agents', 'workspaceFiles', 'sandboxPolicy']
 
 export function apply(ctx) {
   const turns = new WeakMap()

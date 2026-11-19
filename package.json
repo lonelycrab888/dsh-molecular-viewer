@@ -1,6 +1,6 @@
 {
   "name": "dsh-molecular-viewer",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "A live 3D molecular structure viewer for DeepSeek Harness, controlled by the agent and the user.",
   "repository": {
     "type": "git",
@@ -44,7 +44,7 @@
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
-    "dsh": "0.2.2-rc.3"
+    "dsh": "0.2.2-rc.5"
   },
   "scripts": {
     "build": "node scripts/build.mjs",

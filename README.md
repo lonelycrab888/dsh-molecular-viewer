@@ -59,10 +59,18 @@ The workbench keeps private recovery checkpoints in the local DSH cache. Reopeni
 
 ## Install
 
-Install into the Web profile of DSH 0.2.2-rc.3 and reload the DSH interface.
+Version 0.2.4 targets DSH 0.2.2-rc.5. Workbench requests and raw structure imports use DSH's shared connection routes. The embedded viewer loads its HTML through that connection and runs in a sandboxed frame.
+
+For Desktop, open the updated DSH application once to initialize its profile, then fully quit it before installing.
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.3.tgz
+dsh plugin --profile desktop add /path/to/dsh-molecular-viewer-0.2.4.tgz
+```
+
+Restart Desktop after installation. For the Web interface, install into its own profile.
+
+```sh
+dsh plugin --profile web add /path/to/dsh-molecular-viewer-0.2.4.tgz
 ```
 
 ## Development and licensing

@@ -1,6 +1,6 @@
 import React from 'react'
 import {
-  BINARY_STRUCTURE_EXTENSIONS, STRUCTURE_EXTENSIONS, WORKBENCH_PREVIEW, WORKBENCH_ROUTE, WORKBENCH_TAB, workbenchId,
+  BINARY_STRUCTURE_EXTENSIONS, STRUCTURE_EXTENSIONS, WORKBENCH_PREVIEW, WORKBENCH_ROUTE, WORKBENCH_TAB, workbenchId, workbenchResourceUrl,
 } from './workbench-contract.js'
 
 const { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } = React
@@ -225,7 +225,7 @@ function ViewerToolbar({ sessionId, viewerId, examples, retry, nativePreview }) 
   </div>
 }
 
-function FullWorkbench({ endpoint, sessionId, viewerId, data, layout, title, move, retry, reveal, nativePreview }) {
+function FullWorkbench({ frameUrl, sessionId, viewerId, data, layout, title, move, retry, reveal, nativePreview }) {
   const frame = useRef(null)
   const container = useRef(null)
   const mode = useRef(layout === 'pane' && move ? 'fullscreen' : 'inline')
@@ -359,13 +359,19 @@ function FullWorkbench({ endpoint, sessionId, viewerId, data, layout, title, mov
     window.addEventListener('keydown', handleEscape, { signal: scope.signal })
     window.addEventListener('blur', () => setTimeout(markActive, 0), { signal: scope.signal })
     const token = crypto.randomUUID()
-    void workbenchApi(sessionId, viewerId, 'attach-renderer', { token }, scope.signal).then(() => {
+    void workbenchApi(sessionId, viewerId, 'attach-renderer', { token }, scope.signal).then(async () => {
       if (scope.signal.aborted) return
       if (reveal) {
         viewer.addEventListener('load', () => requestAnimationFrame(revealCard), { once: true, signal: scope.signal })
       }
-      viewer.src = `${endpoint}/frame`
-    }, error => {
+      const response = await fetch(frameUrl, { credentials: 'same-origin', signal: scope.signal })
+      if (!response.ok) {
+        const result = await response.json()
+        throw new Error(result.error ?? `HTTP ${response.status}`)
+      }
+      const html = await response.text()
+      if (!scope.signal.aborted) viewer.srcdoc = html
+    }).catch(error => {
       if (!scope.signal.aborted) setMoveError(error.message)
     })
     return () => {
@@ -377,7 +383,7 @@ function FullWorkbench({ endpoint, sessionId, viewerId, data, layout, title, mov
       if (shell.hasAttribute('popover')) shell.hidePopover()
       setMode.current = null
     }
-  }, [endpoint, sessionId, viewerId, data, reveal])
+  }, [frameUrl, sessionId, viewerId, data, reveal])
 
   return <div className={`mv-workbench-frame mv-workbench-${layout}${fullscreen ? ' mv-workbench-fullscreen' : ''}`} ref={container}>
     {fullscreen && <button type="button" className="mv-workbench-exit" onClick={() => setMode.current?.('inline')}>
@@ -392,13 +398,13 @@ function FullWorkbench({ endpoint, sessionId, viewerId, data, layout, title, mov
 
 function WorkbenchFrame({ sessionId, id, layout, title, move, reveal, nativePreview }) {
   const [retry, setRetry] = useState(0)
-  const endpoint = `${WORKBENCH_ROUTE}/${encodeURIComponent(sessionId)}/${id}`
-  const state = useWorkbenchData(`${endpoint}/setup`, undefined, retry)
+  const frameUrl = workbenchResourceUrl('frame', sessionId, id)
+  const state = useWorkbenchData(workbenchResourceUrl('setup', sessionId, id), undefined, retry)
   if (state?.error) return <div className="mv-empty" role="alert">
     {state.error} <button type="button" onClick={() => setRetry(value => value + 1)}>{label.retry}</button>
   </div>
   if (!state?.data) return <p className="mv-empty" role="status">{label.loading}</p>
-  return <FullWorkbench endpoint={endpoint} sessionId={sessionId} viewerId={id} data={state.data} layout={layout}
+  return <FullWorkbench frameUrl={frameUrl} sessionId={sessionId} viewerId={id} data={state.data} layout={layout}
     title={title} move={move} reveal={reveal} nativePreview={nativePreview} retry={() => setRetry(value => value + 1)} />
 }
 
@@ -497,8 +503,8 @@ export function WorkbenchCard({ snapshot, sessionId, openResource, closeResource
   const newest = state.newest?.id === snapshot.id
   const tabs = useSyncExternalStore(openTabs.subscribe, openTabs.getSnapshot)
   const sidebar = tabs.some(tab => tab.sessionId === sessionId && tab.contentId === sidebarAddress(snapshot.id))
-  const endpoint = `${WORKBENCH_ROUTE}/${encodeURIComponent(sessionId)}/${snapshot.id}`
-  const saved = useWorkbenchData(newest && !moved && !location ? `${endpoint}/location` : null)
+  const saved = useWorkbenchData(newest && !moved && !location
+    ? workbenchResourceUrl('location', sessionId, snapshot.id) : null)
   const placement = saved?.data?.placement ?? (saved?.error ? snapshot.placement : undefined)
   const visible = !moved && !sidebar && (location ? location === 'inline' : newest && placement === 'inline')
   const bodyId = useId()

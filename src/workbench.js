@@ -123,12 +123,12 @@ function json(value, status = 200) {
 }
 
 async function parseBody(request) {
-  if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+  if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new Error('The request requires application/json.')
   }
   const chunks = []
   let size = 0
-  for await (const chunk of request) {
+  for await (const chunk of request.body ?? []) {
     size += chunk.length
     if (size > 32 * 1024 * 1024) throw new Error('The workbench request exceeds 32 MiB.')
     chunks.push(chunk)
@@ -844,27 +844,30 @@ export function registerWorkbench(ctx, turns) {
   }))
 
   ctx.effect(() => {
-    const disposeResources = ctx.webServer.register({
-      kind: 'prefix',
-      path: WORKBENCH_ROUTE,
-      resource: async (request, peer) => {
+    const disposeResources = ctx.connection.fetch.register({
+      path: `${WORKBENCH_ROUTE}/resource`,
+      methods: ['GET'],
+      requestBody: 'buffered',
+      fetch: async request => {
         try {
-          const rejection = peer ? undefined : ctx.connection.requestRejection(request)
-          if (rejection !== undefined) return json({ error: 'Open the workbench in an authenticated DSH session.' }, rejection)
-          const parts = new URL(request.url).pathname.slice(WORKBENCH_ROUTE.length + 1).split('/')
-          if (parts.length !== 3) return json({ error: 'Unknown molecular workbench route.' }, 404)
-          const [session, id, action] = parts
-          const { record, directory } = await getRecord(decodeURIComponent(session), id)
-          if (action === 'location' && request.method === 'GET') return json({ placement: record.placement })
-          if (action === 'setup' && request.method === 'GET') {
+          const query = new URL(request.url).searchParams
+          const action = query.get('action')
+          const { record, directory } = await getRecord(query.get('sessionId'), query.get('viewerId'))
+          if (action === 'location') return json({ placement: record.placement })
+          if (action === 'setup') {
             const { path, ...publicArgs } = record.args
             return json({ args: publicArgs, result: record.presentation, lastDistance: (await readLastDistance(directory))?.measurement,
               examples: [...starters.values()].map(({ id, title }) => ({ id, title })) })
           }
-          if (action === 'frame' && request.method === 'GET') {
+          if (action === 'frame') {
             const engine = await engineFor(directory, record.root)
             const resources = await engine.request('resources/read', { uri: record.template }, request.signal)
-            return new Response(resources.contents[0].text, {
+            const html = resources.contents[0].text
+            if (!html.includes('<head>')) throw new Error('The molecular viewer HTML has no document head.')
+            const policy = CSP.replace('; sandbox allow-scripts allow-downloads', '')
+            // srcdoc cannot inherit response headers, so retain the viewer's policy in its document.
+            const secured = html.replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="${policy.replaceAll('"', '&quot;')}">`)
+            return new Response(secured, {
               headers: {
                 'content-type': 'text/html; charset=utf-8',
                 'cache-control': 'no-store',
@@ -874,65 +877,53 @@ export function registerWorkbench(ctx, turns) {
               },
             })
           }
-          return json({ error: 'Unknown molecular workbench route.' }, 404)
+          return json({ error: 'Unknown molecular workbench resource.' }, 404)
         } catch (error) {
           return json({ error: errorText(error) }, 400)
         }
       },
     })
-    const disposeImport = ctx.webServer.register({
-      kind: 'exact',
+    const disposeImport = ctx.connection.fetch.register({
       path: `${WORKBENCH_ROUTE}/import`,
-      handler: async (request, response) => {
-        const abort = new AbortController()
-        response.once('close', () => abort.abort())
+      methods: ['POST'],
+      requestBody: 'streaming',
+      fetch: async request => {
         async function upload() {
-          const rejection = ctx.connection.requestRejection(request)
-          if (rejection !== undefined) return json({ error: 'Open an authenticated DSH conversation.' }, rejection)
-          if (request.method !== 'POST') return json({ error: 'Use POST.' }, 405)
-          if (request.headers['content-type'] !== 'application/octet-stream') return json({ error: 'Upload a structure file.' }, 415)
+          if (request.headers.get('content-type') !== 'application/octet-stream') return json({ error: 'Upload a structure file.' }, 415)
           const { searchParams } = new URL(request.url, 'http://localhost')
           const agent = ctx.agents.get(searchParams.get('sessionId'))
           if (!agent) return json({ error: 'Open the owning DSH conversation before importing files.' }, 404)
           requireWorkspaceWrite(agent)
-          const root = await resolveRoot(agent, abort.signal)
+          const root = await resolveRoot(agent, request.signal)
           const name = (searchParams.get('name') ?? '').replace(/[^a-z0-9._-]/gi, '_').slice(-150)
           if (!STRUCTURE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(`.${ext}`))) {
             return json({ error: 'Choose a supported molecular structure file.' }, 400)
           }
-          if (Number(request.headers['content-length']) > MAX_STRUCTURE_BYTES) {
+          if (Number(request.headers.get('content-length')) > MAX_STRUCTURE_BYTES) {
             return json({ error: 'Structure file exceeds the 40 MiB limit.' }, 413)
           }
           const chunks = []
           let size = 0
-          for await (const chunk of request) {
+          for await (const chunk of request.body ?? []) {
             size += chunk.length
             if (size > MAX_STRUCTURE_BYTES) return json({ error: 'Structure file exceeds the 40 MiB limit.' }, 413)
             chunks.push(chunk)
           }
           if (size === 0) return json({ error: 'The structure file is empty.' }, 400)
-          const { file } = await stageStructure(root, name, Buffer.concat(chunks, size), abort.signal)
+          const { file } = await stageStructure(root, name, Buffer.concat(chunks, size), request.signal)
           return json({ source: relative(root, file) })
         }
-        const result = await upload().catch(error => json({ error: errorText(error) }, 400))
-        if (!abort.signal.aborted) {
-          response.writeHead(result.status, Object.fromEntries(result.headers))
-          response.end(await result.text())
-        }
+        return upload().catch(error => json({ error: errorText(error) }, 400))
       },
     })
-    const disposeApi = ctx.webServer.register({
-      kind: 'exact',
+    const disposeApi = ctx.connection.fetch.register({
       path: `${WORKBENCH_ROUTE}/api`,
-      handler: async (request, response) => {
-        const abort = new AbortController()
-        response.once('close', () => abort.abort())
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: async request => {
         async function run() {
-          const rejection = ctx.connection.requestRejection(request)
-          if (rejection !== undefined) return json({ error: 'Open the workbench in an authenticated DSH session.' }, rejection)
-          if (request.method !== 'POST') return json({ error: 'Use POST.' }, 405)
           const { action, sessionId, viewerId, address, method, params, picks, question, selectionId, placement, exampleId, token } = await parseBody(request)
-          if (action === 'preview') return json(await openPreview({ sessionId, address }, abort.signal))
+          if (action === 'preview') return json(await openPreview({ sessionId, address }, request.signal))
           const { record, directory } = await getRecord(sessionId, viewerId)
           if (action === 'activate') {
             if (activeRecord(sessionId)?.id !== viewerId) await activate(record)
@@ -953,12 +944,12 @@ export function registerWorkbench(ctx, turns) {
             if (typeof token !== 'string' || !openIntentUuid.test(token)) throw new Error('Invalid renderer ID.')
             const renderer = { token, attached: true, attachedAt: Date.now(), previousIncarnation: undefined }
             renderers.set(record.id, renderer)
-            const state = await readViewerStatus(engine, record, abort.signal)
+            const state = await readViewerStatus(engine, record, request.signal)
             renderer.previousIncarnation = state.rendererIncarnationId ?? null
             return json({ ok: true })
           }
           if (action === 'status') {
-            const state = await readViewerStatus(engine, record, abort.signal)
+            const state = await readViewerStatus(engine, record, request.signal)
             const starter = record.starterId ? await maybeStartExample(engine, record, directory, state) : undefined
             const publicStarter = starter?.phase === 'complete' ? {
               phase: 'complete', results: starter.results.map(({ tool, summary }) => ({ tool, summary })),
@@ -969,20 +960,20 @@ export function registerWorkbench(ctx, turns) {
           if (action === 'launch-example') {
             const starter = starters.get(exampleId)
             const agent = ctx.agents.get(record.owner)
-            if (!starter || !agent || await resolveRoot(agent, abort.signal) !== record.root) {
+            if (!starter || !agent || await resolveRoot(agent, request.signal) !== record.root) {
               throw new Error('Open the owning DSH conversation before starting a packaged example.')
             }
-            abort.signal.throwIfAborted()
+            request.signal.throwIfAborted()
             agent.followup({ id: randomUUID(), role: 'user', source: { kind: 'user' },
               content: [{ type: 'text', text: `${starter.prompt}\n\nRun the packaged DSH starter with molecular_workbench action "open" and exampleId "${starter.id}". The workbench runs the example after mounting.` }] })
             return json({ ok: true })
           }
-          if (action === 'capture-selection') return json(await captureSelection(engine, record, abort.signal))
+          if (action === 'capture-selection') return json(await captureSelection(engine, record, request.signal))
           if (action === 'ask-selection') {
-            await askAboutSelection(record, selectionId, question, abort.signal)
+            await askAboutSelection(record, selectionId, question, request.signal)
             return json({ ok: true })
           }
-          if (action === 'selected-residue') return json({ residue: await selectedResidue(engine, record, abort.signal) })
+          if (action === 'selected-residue') return json({ residue: await selectedResidue(engine, record, request.signal) })
           if (action === 'residue-distance') {
             if (!Array.isArray(picks) || picks.length !== 2 || !picks[0]?.objectId || picks[0].objectId !== picks[1]?.objectId) {
               throw new Error('Choose two residues from the same loaded structure.')
@@ -994,32 +985,26 @@ export function registerWorkbench(ctx, turns) {
               action: 'measure_residue_distance', objectId: first.objectId,
               chain: first.chain, residue: first.residueNumber, insertionCode: first.insertionCode, instanceId: first.instanceId,
               chainB: second.chain, residueB: second.residueNumber, insertionCodeB: second.insertionCode, instanceIdB: second.instanceId,
-            }, abort.signal)
+            }, request.signal)
             const measured = publicResult('residue-distance', result)
             return measured.ok ? json(measured) : json({ error: measured.summary }, 400)
           }
           if (action !== 'rpc') return json({ error: 'Unknown molecular workbench operation.' }, 400)
           if (method === 'tools/call' && visibleTo(engine.tools.get(params?.name), 'app') && !blockedOpen.has(params.name)) {
-            return json({ result: await engine.request(method, params, abort.signal) })
+            return json({ result: await engine.request(method, params, request.signal) })
           }
           if (method === 'resources/read' && typeof params?.uri === 'string') {
-            return json({ result: await engine.request(method, params, abort.signal) })
+            return json({ result: await engine.request(method, params, request.signal) })
           }
           return json({ error: 'Unknown molecular workbench renderer operation.' }, 400)
         }
-        const result = await run().catch(error => json({ error: errorText(error) }, 400))
-        if (!abort.signal.aborted) {
-          response.writeHead(result.status, Object.fromEntries(result.headers))
-          response.end(await result.text())
-        }
+        return run().catch(error => json({ error: errorText(error) }, 400))
       },
     })
-    return () => {
-      disposeApi()
-      disposeImport()
-      disposeResources()
+    return async () => {
+      await Promise.all([disposeApi(), disposeImport(), disposeResources()])
       for (const task of starterRuns.values()) task.controller.abort()
-      for (const engine of engines.values()) void engine.then(item => item.close()).catch(() => {})
+      await Promise.all([...engines.values()].map(engine => engine.then(item => item.close()).catch(() => {})))
       engines.clear()
     }
   })

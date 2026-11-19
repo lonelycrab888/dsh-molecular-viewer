@@ -1,6 +1,6 @@
 export const PLUGIN_ID = 'dsh-molecular-viewer'
 export const WORKBENCH_TOOL = 'molecular_workbench'
-export const WORKBENCH_ROUTE = '/dsh-molecular-viewer/workbench'
+export const WORKBENCH_ROUTE = '/api/dsh-molecular-viewer/workbench'
 export const WORKBENCH_TAB = 'dsh-molecular-workbench'
 export const WORKBENCH_PREVIEW = 'dsh-molecular-viewer/molstar'
 
@@ -13,4 +13,9 @@ export const BINARY_STRUCTURE_EXTENSIONS = STRUCTURE_EXTENSIONS.filter(extension
 
 export function workbenchId(value) {
   return typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value)
+}
+
+export function workbenchResourceUrl(action, sessionId, viewerId) {
+  const query = new URLSearchParams({ action, sessionId, viewerId })
+  return `${WORKBENCH_ROUTE}/resource?${query}`
 }
